@@ -170,13 +170,25 @@ class PlaylistRepository(private val context: Context) {
                 coversDir.mkdirs()
             }
             val destFile = File(coversDir, "cover_${playlistId}_${System.currentTimeMillis()}.jpg")
-            val resolver = context.contentResolver
-            val copied = resolver?.openInputStream(sourceUri)?.use { input ->
+            val inputStream = context.contentResolver?.openInputStream(sourceUri)
+                ?: if (sourceUri.scheme == "file" && !sourceUri.path.isNullOrBlank()) {
+                    File(sourceUri.path!!).takeIf { it.exists() }?.inputStream()
+                } else null
+
+            val copied = inputStream?.use { input ->
                 destFile.outputStream().use { output ->
                     input.copyTo(output)
                 }
                 true
             } ?: false
+
+            // Se il file sorgente proviene dalla cache temporanea di ritaglio, rimuovilo dopo la copia
+            if (sourceUri.scheme == "file") {
+                val path = sourceUri.path
+                if (!path.isNullOrBlank() && path.contains("cropped_covers")) {
+                    try { File(path).delete() } catch (_: Exception) {}
+                }
+            }
 
             if (!copied || !destFile.exists() || destFile.length() == 0L) {
                 destFile.delete()
@@ -188,6 +200,54 @@ class PlaylistRepository(private val context: Context) {
             destFile.toURI().toString()
         } catch (e: Exception) {
             Log.e("PlaylistRepository", "Errore durante il salvataggio della copertina playlist", e)
+            null
+        }
+    }
+
+    /**
+     * Legge i byte del file copertina personalizzata di una playlist (se presente su disco interno).
+     */
+    @Synchronized
+    fun readPlaylistCoverBytes(playlist: Playlist): ByteArray? {
+        if (playlist.isFavorites) return null
+        val uriStr = playlist.coverUri?.takeIf { it.isNotBlank() } ?: return null
+        return try {
+            val file = when {
+                uriStr.startsWith("file:") -> File(java.net.URI(uriStr))
+                else -> File(uriStr)
+            }
+            if (file.exists() && file.isFile && file.length() > 0L) {
+                file.readBytes()
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            Log.w("PlaylistRepository", "Impossibile leggere i byte della copertina per playlist ${playlist.id}", e)
+            null
+        }
+    }
+
+    /**
+     * Salva su storage interno i byte di una copertina per [playlistId] (es. durante il ripristino di un backup)
+     * e restituisce l'URI `file://` risultante.
+     */
+    @Synchronized
+    fun writeCoverFileFromBytes(playlistId: String, imageBytes: ByteArray): String? {
+        if (playlistId == FAVORITES_PLAYLIST_ID || imageBytes.isEmpty()) return null
+        return try {
+            if (!coversDir.exists()) {
+                coversDir.mkdirs()
+            }
+            val destFile = File(coversDir, "cover_${playlistId}_${System.currentTimeMillis()}.jpg")
+            destFile.writeBytes(imageBytes)
+            if (!destFile.exists() || destFile.length() == 0L) {
+                destFile.delete()
+                return null
+            }
+            deleteCoverFilesForPlaylist(playlistId, excludeFileName = destFile.name)
+            destFile.toURI().toString()
+        } catch (e: Exception) {
+            Log.e("PlaylistRepository", "Errore scrittura byte copertina per playlist $playlistId", e)
             null
         }
     }

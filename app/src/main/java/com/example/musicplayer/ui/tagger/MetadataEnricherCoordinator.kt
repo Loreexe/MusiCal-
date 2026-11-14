@@ -103,8 +103,13 @@ class MetadataEnricherCoordinator(
         options: EnricherOptions
     ) {
         activeSearchJob?.cancel()
-        val currentCandidates = (_enricherState.value as? EnricherUiState.ReviewTrack)?.candidates.orEmpty()
-        _enricherState.value = EnricherUiState.Loading("Caricamento dettagli da Deezer...")
+        val currentReviewTrack = _enricherState.value as? EnricherUiState.ReviewTrack
+        val currentCandidates = currentReviewTrack?.candidates.orEmpty()
+        val parentAlbum = currentReviewTrack?.parentAlbumState
+        _enricherState.value = EnricherUiState.Loading(
+            message = "Caricamento dettagli da Deezer...",
+            parentAlbumState = parentAlbum
+        )
         activeSearchJob = scope.launch {
             val res = enricherRepository.enrichFromCandidate(track, candidate, options)
             res.fold(
@@ -113,12 +118,14 @@ class MetadataEnricherCoordinator(
                         track = track,
                         enriched = enriched,
                         candidates = currentCandidates,
-                        options = options
+                        options = options,
+                        parentAlbumState = parentAlbum
                     )
                 },
                 onFailure = { error ->
                     _enricherState.value = EnricherUiState.Error(
-                        error.message ?: "Impossibile recuperare i dettagli del brano selezionato."
+                        message = error.message ?: "Impossibile recuperare i dettagli del brano selezionato.",
+                        parentAlbumState = parentAlbum
                     )
                 }
             )
@@ -131,31 +138,183 @@ class MetadataEnricherCoordinator(
         customArtist: String
     ) {
         activeSearchJob?.cancel()
-        _enricherState.value = EnricherUiState.Loading("Ricerca personalizzata...")
+        val currentReviewTrack = _enricherState.value as? EnricherUiState.ReviewTrack
+        val parentAlbum = currentReviewTrack?.parentAlbumState
+        val currentOptions = currentReviewTrack?.options ?: EnricherOptions()
+        _enricherState.value = EnricherUiState.Loading(
+            message = "Ricerca personalizzata...",
+            parentAlbumState = parentAlbum
+        )
         activeSearchJob = scope.launch {
             val candidatesRes = enricherRepository.searchCustom(customTitle, customArtist)
             candidatesRes.fold(
                 onSuccess = { candidates ->
                     if (candidates.isEmpty()) {
-                        _enricherState.value = EnricherUiState.Error("Nessun risultato trovato per '$customTitle - $customArtist'")
+                        _enricherState.value = EnricherUiState.Error(
+                            message = "Nessun risultato trovato per '$customTitle - $customArtist'",
+                            parentAlbumState = parentAlbum
+                        )
                     } else {
                         val best = candidates.first()
-                        val enriched = enricherRepository.enrichFromCandidate(track, best, EnricherOptions()).getOrNull()
+                        val enriched = enricherRepository.enrichFromCandidate(track, best, currentOptions).getOrNull()
                         if (enriched != null) {
                             _enricherState.value = EnricherUiState.ReviewTrack(
                                 track = track,
                                 enriched = enriched,
                                 candidates = candidates,
-                                options = EnricherOptions()
+                                options = currentOptions,
+                                parentAlbumState = parentAlbum
                             )
                         } else {
-                            _enricherState.value = EnricherUiState.Error("Impossibile elaborare il risultato Deezer.")
+                            _enricherState.value = EnricherUiState.Error(
+                                message = "Impossibile elaborare il risultato Deezer.",
+                                parentAlbumState = parentAlbum
+                            )
                         }
                     }
                 },
                 onFailure = { err ->
-                    _enricherState.value = EnricherUiState.Error(err.message ?: "Errore durante la ricerca personalizzata.")
+                    _enricherState.value = EnricherUiState.Error(
+                        message = err.message ?: "Errore durante la ricerca personalizzata.",
+                        parentAlbumState = parentAlbum
+                    )
                 }
+            )
+        }
+    }
+
+    /**
+     * Apre la sottofinestra "Auto-tagga e testi" per un singolo brano a partire dalla finestra
+     * "Uniforma / Separa Album", preservando lo stato completo dell'album padre.
+     */
+    fun openTrackEditorFromAlbum(
+        track: AudioTrack,
+        albumSnapshot: EnricherUiState.ReviewAlbum
+    ) {
+        activeSearchJob?.cancel()
+        val currentMeta = albumSnapshot.tracksEnriched[track.id] ?: EnrichedMetadata(
+            title = track.title,
+            artist = track.artist,
+            album = track.album,
+            albumArtist = track.albumArtist.ifBlank { track.artist },
+            trackNumber = track.trackNumber.takeIf { it > 0 },
+            discNumber = track.discNumber.coerceAtLeast(1),
+            genre = track.genre.takeIf { it.isNotBlank() }
+        )
+        val trackOptions = albumSnapshot.trackCustomOptions[track.id] ?: albumSnapshot.options
+
+        _enricherState.value = EnricherUiState.ReviewTrack(
+            track = track,
+            enriched = currentMeta,
+            candidates = emptyList(),
+            options = trackOptions,
+            parentAlbumState = albumSnapshot
+        )
+
+        // Carica in background i candidati alternativi da Deezer senza bloccare la sottofinestra
+        activeSearchJob = scope.launch {
+            val candidates = enricherRepository.searchCustom(currentMeta.title, currentMeta.artist)
+                .getOrNull()
+                .orEmpty()
+            val stateNow = _enricherState.value
+            if (stateNow is EnricherUiState.ReviewTrack &&
+                stateNow.track.id == track.id &&
+                stateNow.parentAlbumState != null
+            ) {
+                _enricherState.value = stateNow.copy(candidates = candidates)
+            }
+        }
+    }
+
+    /**
+     * Ritorna alla finestra Album padre annullando le modifiche non confermate nella sottofinestra del singolo brano.
+     */
+    fun returnToAlbumFromTrackEditor(): Boolean {
+        val parentAlbum = when (val s = _enricherState.value) {
+            is EnricherUiState.ReviewTrack -> s.parentAlbumState
+            is EnricherUiState.Loading -> s.parentAlbumState
+            is EnricherUiState.Error -> s.parentAlbumState
+            else -> null
+        } ?: return false
+
+        activeSearchJob?.cancel()
+        activeSearchJob = null
+        _enricherState.value = parentAlbum
+        return true
+    }
+
+    /**
+     * Conferma in-memory le modifiche effettuate sul singolo brano nella sottofinestra e ritorna
+     * alla finestra "Uniforma / Separa Album" aggiornando la lista dei brani.
+     * Se in modalità "Uniforma Album" l'utente ha cambiato manualmente l'album di appartenenza del brano,
+     * il brano viene rimosso dalla lista dei brani dell'album corrente e accodato in [EnricherUiState.ReviewAlbum.movedOutTracks]
+     * per essere salvato col nuovo album al momento della conferma finale.
+     */
+    fun confirmTrackEditInAlbum(
+        track: AudioTrack,
+        editedMetadata: EnrichedMetadata,
+        trackOptions: EnricherOptions
+    ) {
+        val current = _enricherState.value as? EnricherUiState.ReviewTrack ?: return
+        val parent = current.parentAlbumState ?: return
+        activeSearchJob?.cancel()
+        activeSearchJob = null
+
+        val targetUnifiedAlbum = (
+            parent.editedAlbumTitle
+                ?: parent.unifiedTracksEnriched.values.firstOrNull()?.album
+                ?: parent.album.title
+            ).trim()
+
+        val isMovedToDifferentAlbum = !parent.isSeparationMode &&
+            editedMetadata.album.trim().isNotBlank() &&
+            !editedMetadata.album.trim().equals(targetUnifiedAlbum, ignoreCase = true)
+
+        if (isMovedToDifferentAlbum) {
+            val remainingTracks = parent.album.tracks.filter { it.id != track.id }
+            val updatedMovedOut = parent.movedOutTracks + (track.id to (track to editedMetadata))
+            val updatedCustomOpts = parent.trackCustomOptions + (track.id to trackOptions)
+            val updatedTracksEnriched = parent.tracksEnriched - track.id
+            val updatedUnified = parent.unifiedTracksEnriched - track.id
+            val updatedIndividual = parent.individualTracksEnriched + (track.id to editedMetadata)
+
+            val updatedAlbumState = parent.copy(
+                album = parent.album.copy(tracks = remainingTracks),
+                tracksEnriched = updatedTracksEnriched,
+                unifiedTracksEnriched = updatedUnified,
+                individualTracksEnriched = updatedIndividual,
+                manuallyEditedTrackIds = parent.manuallyEditedTrackIds + track.id,
+                movedOutTracks = updatedMovedOut,
+                trackCustomOptions = updatedCustomOpts
+            )
+
+            if (remainingTracks.isEmpty()) {
+                applyAlbumEnrichment(
+                    album = updatedAlbumState.album,
+                    tracksEnriched = updatedTracksEnriched,
+                    options = updatedAlbumState.options,
+                    movedOutTracks = updatedMovedOut,
+                    trackCustomOptions = updatedCustomOpts
+                )
+            } else {
+                _enricherState.value = updatedAlbumState
+            }
+        } else {
+            val updatedTracksEnriched = parent.tracksEnriched + (track.id to editedMetadata)
+            val updatedUnified = if (!parent.isSeparationMode) {
+                parent.unifiedTracksEnriched + (track.id to editedMetadata)
+            } else {
+                parent.unifiedTracksEnriched
+            }
+            val updatedIndividual = parent.individualTracksEnriched + (track.id to editedMetadata)
+            val updatedCustomOpts = parent.trackCustomOptions + (track.id to trackOptions)
+
+            _enricherState.value = parent.copy(
+                tracksEnriched = updatedTracksEnriched,
+                unifiedTracksEnriched = updatedUnified,
+                individualTracksEnriched = updatedIndividual,
+                manuallyEditedTrackIds = parent.manuallyEditedTrackIds + track.id,
+                trackCustomOptions = updatedCustomOpts
             )
         }
     }
@@ -280,12 +439,56 @@ class MetadataEnricherCoordinator(
 
     fun toggleAlbumEnrichmentMode(separate: Boolean) {
         val current = _enricherState.value as? EnricherUiState.ReviewAlbum ?: return
-        val newMap = if (separate) current.individualTracksEnriched else current.unifiedTracksEnriched
-        _enricherState.value = current.copy(
-            tracksEnriched = newMap,
-            isSeparationMode = separate,
-            options = current.options.copy(normalizeAlbum = !separate)
-        )
+        if (separate) {
+            val restoredTracks = (current.album.tracks + current.movedOutTracks.values.map { it.first })
+                .distinctBy { it.id }
+            _enricherState.value = current.copy(
+                album = current.album.copy(tracks = restoredTracks),
+                tracksEnriched = current.individualTracksEnriched,
+                movedOutTracks = emptyMap(),
+                isSeparationMode = true,
+                options = current.options.copy(normalizeAlbum = false)
+            )
+        } else {
+            val targetUnifiedAlbum = (
+                current.editedAlbumTitle
+                    ?: current.unifiedTracksEnriched.values.firstOrNull()?.album
+                    ?: current.album.title
+                ).trim()
+
+            val allTracks = (current.album.tracks + current.movedOutTracks.values.map { it.first })
+                .distinctBy { it.id }
+            val newMovedOut = mutableMapOf<Long, Pair<AudioTrack, EnrichedMetadata>>()
+            val remainingTracks = mutableListOf<AudioTrack>()
+            val newUnified = current.unifiedTracksEnriched.toMutableMap()
+
+            allTracks.forEach { track ->
+                val indMeta = current.individualTracksEnriched[track.id]
+                val wasManuallyEdited = track.id in current.manuallyEditedTrackIds
+                if (wasManuallyEdited &&
+                    indMeta != null &&
+                    indMeta.album.trim().isNotBlank() &&
+                    !indMeta.album.trim().equals(targetUnifiedAlbum, ignoreCase = true)
+                ) {
+                    newMovedOut[track.id] = track to indMeta
+                    newUnified.remove(track.id)
+                } else {
+                    remainingTracks.add(track)
+                    if (wasManuallyEdited && indMeta != null) {
+                        newUnified[track.id] = indMeta
+                    }
+                }
+            }
+
+            _enricherState.value = current.copy(
+                album = current.album.copy(tracks = remainingTracks),
+                tracksEnriched = newUnified,
+                unifiedTracksEnriched = newUnified,
+                movedOutTracks = newMovedOut,
+                isSeparationMode = false,
+                options = current.options.copy(normalizeAlbum = true)
+            )
+        }
     }
 
     fun applyTrackEnrichment(
@@ -316,19 +519,38 @@ class MetadataEnricherCoordinator(
     fun applyAlbumEnrichment(
         album: Album,
         tracksEnriched: Map<Long, EnrichedMetadata>,
-        options: EnricherOptions
+        options: EnricherOptions,
+        movedOutTracks: Map<Long, Pair<AudioTrack, EnrichedMetadata>>? = null,
+        trackCustomOptions: Map<Long, EnricherOptions>? = null
     ) {
-        _enricherState.value = EnricherUiState.Writing(1, album.tracks.size, "Elaborazione file...")
+        val currentAlbumState = _enricherState.value as? EnricherUiState.ReviewAlbum
+        val effectiveMovedOut = movedOutTracks ?: currentAlbumState?.movedOutTracks.orEmpty()
+        val effectiveCustomOptions = trackCustomOptions ?: currentAlbumState?.trackCustomOptions.orEmpty()
+        val totalToProcess = album.tracks.size + effectiveMovedOut.size
+
+        _enricherState.value = EnricherUiState.Writing(1, totalToProcess.coerceAtLeast(1), "Elaborazione file...")
         scope.launch {
             clearPendingWrites()
             val urisToAuthorize = mutableListOf<Uri>()
 
             album.tracks.forEach { track ->
                 val meta = tracksEnriched[track.id] ?: return@forEach
-                val prepared = storageWriteManager.prepareTrackInCache(track, meta, options)
+                val trackOpts = effectiveCustomOptions[track.id] ?: options
+                val prepared = storageWriteManager.prepareTrackInCache(track, meta, trackOpts)
                 if (prepared != null) {
                     pendingWrites[track] = Pair(prepared, meta)
                     urisToAuthorize.add(track.uri)
+                }
+            }
+
+            effectiveMovedOut.values.forEach { (movedTrack, movedMeta) ->
+                if (!pendingWrites.containsKey(movedTrack)) {
+                    val trackOpts = effectiveCustomOptions[movedTrack.id] ?: options.copy(normalizeAlbum = false)
+                    val prepared = storageWriteManager.prepareTrackInCache(movedTrack, movedMeta, trackOpts)
+                    if (prepared != null) {
+                        pendingWrites[movedTrack] = Pair(prepared, movedMeta)
+                        urisToAuthorize.add(movedTrack.uri)
+                    }
                 }
             }
 

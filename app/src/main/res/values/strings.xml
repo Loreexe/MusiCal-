@@ -408,6 +408,11 @@
     <string name="autotag_not_set">Non impostato</string>
     <string name="autotag_not_set_f">Non impostata</string>
     <string name="autotag_disc_format">Disco %d</string>
+    <string name="autotag_edit_single_track">Modifica brano</string>
+    <string name="autotag_back_to_album">Torna all\'album</string>
+    <string name="autotag_apply_to_track">Applica al brano</string>
+    <string name="autotag_moved_tracks_notice">%d brano/i spostato/i in un altro album (verrà salvato al termine)</string>
+    <string name="autotag_edited_track_badge">Modificato</string>
 
     <!-- Messaggi Snackbar e Notifiche Interfaccia -->
     <string name="snackbar_cover_updated">Copertina aggiornata per \"%s\"</string>
@@ -432,7 +437,7 @@
     <string name="backup_export_success">Backup salvato con successo</string>
     <string name="backup_export_error">Errore durante il salvataggio del backup: %s</string>
     <string name="backup_import_error">Errore durante l\'importazione del backup: %s</string>
-    <string name="backup_error_file_too_large">il file supera il limite massimo di 10 MB</string>
+    <string name="backup_error_file_too_large">il file supera il limite massimo di 30 MB</string>
     <string name="backup_error_unsupported_version">versione del backup non supportata</string>
     <string name="backup_error_invalid_format">formato JSON non valido o danneggiato</string>
     <string name="backup_error_io">impossibile accedere al file selezionato</string>
@@ -445,4 +450,13 @@
     <string name="backup_import_summary_prefs_restored">Preferenze ripristinate: Sì</string>
     <string name="backup_import_summary_unmatched_header">Brani non trovati sul dispositivo (%d):</string>
     <string name="backup_import_summary_unmatched_more">…e altri %d brani</string>
+
+    <!-- Ritaglio e Zoom Copertina Playlist -->
+    <string name="crop_cover_title">Ritaglia e ridimensiona copertina</string>
+    <string name="crop_cover_hint">Trascina con un dito o usa due dita / lo slider per inquadrare la foto</string>
+    <string name="crop_cover_zoom">Zoom</string>
+    <string name="crop_cover_rotate">Ruota 90°</string>
+    <string name="crop_cover_reset">Centra</string>
+    <string name="crop_cover_apply">Applica</string>
+    <string name="zoom_cover_hint">Pizzica o tocca due volte per ingrandire</string>
 </resources>

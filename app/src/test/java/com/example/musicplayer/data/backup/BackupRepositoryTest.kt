@@ -238,4 +238,42 @@ class BackupRepositoryTest {
         assertEquals(listOf(9001L, 9002L), playlistRepo.loadPlaylists().first { it.name == "Roadtrip" }.trackIds)
         assertEquals(1, fakeDao.items.size)
     }
+
+    @Test
+    fun exportAndImportPreservesCustomPlaylistCoverAcrossDevices() = runBlocking {
+        val t1 = makeTrack(101L, "Summer Vibe", "DJ Test", displayName = "vibe.mp3", relativePath = "Music/")
+        // Crea byte JPEG fittizi ma con header JPEG valido (FF D8 FF E0 ...)
+        val fakeJpegBytes = byteArrayOf(
+            0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(),
+            0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x02, 0x03, 0xFF.toByte(), 0xD9.toByte()
+        )
+        val savedCoverUri = playlistRepo.writeCoverFileFromBytes("pl_summer", fakeJpegBytes)
+        assertTrue(!savedCoverUri.isNullOrBlank())
+
+        playlistRepo.savePlaylists(
+            listOf(
+                Playlist(FAVORITES_PLAYLIST_ID, FAVORITES_PLAYLIST_NAME, listOf(101L)),
+                Playlist("pl_summer", "Estate", listOf(101L), coverUri = savedCoverUri)
+            )
+        )
+
+        val exportedJson = repository.buildBackupJson(listOf(t1))
+        val playlistsArray = exportedJson.getJSONArray("playlists")
+        val exportedSummer = playlistsArray.getJSONObject(1)
+        assertTrue(exportedSummer.has("coverBase64"))
+        assertTrue(exportedSummer.getString("coverBase64").isNotBlank())
+
+        // Simula cambio dispositivo: cancella playlist e file copertine locali
+        playlistRepo.deletePlaylist("pl_summer")
+        playlistRepo.savePlaylists(listOf(Playlist(FAVORITES_PLAYLIST_ID, FAVORITES_PLAYLIST_NAME, emptyList())))
+
+        val newDeviceTrack = makeTrack(5001L, "Summer Vibe", "DJ Test", displayName = "vibe.mp3", relativePath = "Music/")
+        val summary = repository.importBackupJson(exportedJson, listOf(newDeviceTrack))
+        assertEquals(1, summary.importedPlaylistsCount)
+
+        val restoredPlaylist = playlistRepo.loadPlaylists().first { it.name == "Estate" }
+        assertTrue(!restoredPlaylist.coverUri.isNullOrBlank())
+        val restoredBytes = playlistRepo.readPlaylistCoverBytes(restoredPlaylist)
+        org.junit.Assert.assertArrayEquals(fakeJpegBytes, restoredBytes)
+    }
 }

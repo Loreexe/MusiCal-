@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -65,6 +66,7 @@ fun AlbumsGridView(
     onAddToQueueClick: ((Album) -> Unit)? = null,
     onAutoTagAlbumClick: ((Album) -> Unit)? = null,
     onAutoTagAlbumSeparationClick: ((Album) -> Unit)? = null,
+    onArtistClick: ((String) -> Unit)? = null,
     state: LazyGridState = rememberLazyGridState(),
     isAlphabetical: Boolean = false,
     letterProvider: ((Int) -> String?)? = null
@@ -112,7 +114,8 @@ fun AlbumsGridView(
                         onClick = { onAlbumClick(album) },
                         onAddToQueueClick = onAddToQueueClick,
                         onAutoTagAlbumClick = onAutoTagAlbumClick,
-                        onAutoTagAlbumSeparationClick = onAutoTagAlbumSeparationClick
+                        onAutoTagAlbumSeparationClick = onAutoTagAlbumSeparationClick,
+                        onArtistClick = onArtistClick
                     )
                 }
             }
@@ -140,7 +143,8 @@ fun AlbumGridItem(
     modifier: Modifier = Modifier,
     onAddToQueueClick: ((Album) -> Unit)? = null,
     onAutoTagAlbumClick: ((Album) -> Unit)? = null,
-    onAutoTagAlbumSeparationClick: ((Album) -> Unit)? = null
+    onAutoTagAlbumSeparationClick: ((Album) -> Unit)? = null,
+    onArtistClick: ((String) -> Unit)? = null
 ) {
     Card(
         modifier = modifier
@@ -239,7 +243,8 @@ fun AlbumGridItem(
                     )
                 }
 
-                if (onAddToQueueClick != null || onAutoTagAlbumClick != null) {
+                val resolvedArtist = remember(album) { album.resolvableArtist() }
+                if (onAddToQueueClick != null || onAutoTagAlbumClick != null || (onArtistClick != null && resolvedArtist != null)) {
                     var menuExpanded by remember { mutableStateOf(false) }
                     Box {
                         IconButton(
@@ -256,6 +261,22 @@ fun AlbumGridItem(
                             expanded = menuExpanded,
                             onDismissRequest = { menuExpanded = false }
                         ) {
+                            if (onArtistClick != null && resolvedArtist != null) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.player_menu_view_artist)) },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Person,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onArtistClick(resolvedArtist)
+                                    }
+                                )
+                            }
                             if (onAddToQueueClick != null) {
                                 DropdownMenuItem(
                                     text = { Text(stringResource(R.string.player_menu_add_to_queue)) },
@@ -322,4 +343,22 @@ fun AlbumGridItem(
             }
         }
     }
+}
+
+internal fun Album.resolvableArtist(): String? {
+    val genericArtists = setOf(
+        "artisti vari",
+        "various artists",
+        "artista sconosciuto",
+        "unknown artist",
+        "<unknown>"
+    )
+    val primary = artist.trim()
+    if (primary.isNotBlank() && primary.lowercase() !in genericArtists) {
+        return primary
+    }
+    return tracks.firstOrNull { track ->
+        val tArtist = track.artist.trim()
+        tArtist.isNotBlank() && tArtist.lowercase() !in genericArtists
+    }?.artist?.trim()
 }

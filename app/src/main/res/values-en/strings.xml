@@ -408,6 +408,11 @@
     <string name="autotag_not_set">Not set</string>
     <string name="autotag_not_set_f">Not set</string>
     <string name="autotag_disc_format">Disc %d</string>
+    <string name="autotag_edit_single_track">Edit track</string>
+    <string name="autotag_back_to_album">Back to album</string>
+    <string name="autotag_apply_to_track">Apply to track</string>
+    <string name="autotag_moved_tracks_notice">%d track(s) moved to another album (will be saved on completion)</string>
+    <string name="autotag_edited_track_badge">Edited</string>
 
     <!-- Snackbar Messages &amp; UI Notifications -->
     <string name="snackbar_cover_updated">Cover updated for \"%s\"</string>
@@ -432,7 +437,7 @@
     <string name="backup_export_success">Backup saved successfully</string>
     <string name="backup_export_error">Error saving backup: %s</string>
     <string name="backup_import_error">Error importing backup: %s</string>
-    <string name="backup_error_file_too_large">file exceeds the 10 MB limit</string>
+    <string name="backup_error_file_too_large">file exceeds the 30 MB limit</string>
     <string name="backup_error_unsupported_version">unsupported backup version</string>
     <string name="backup_error_invalid_format">invalid or corrupted JSON format</string>
     <string name="backup_error_io">unable to access the selected file</string>
@@ -445,4 +450,13 @@
     <string name="backup_import_summary_prefs_restored">Preferences restored: Yes</string>
     <string name="backup_import_summary_unmatched_header">Tracks not found on device (%d):</string>
     <string name="backup_import_summary_unmatched_more">…and %d more tracks</string>
+
+    <!-- Playlist Cover Crop and Zoom -->
+    <string name="crop_cover_title">Crop &amp; resize cover</string>
+    <string name="crop_cover_hint">Drag with one finger or use two fingers / slider to frame the photo</string>
+    <string name="crop_cover_zoom">Zoom</string>
+    <string name="crop_cover_rotate">Rotate 90°</string>
+    <string name="crop_cover_reset">Center</string>
+    <string name="crop_cover_apply">Apply</string>
+    <string name="zoom_cover_hint">Pinch or double-tap to zoom</string>
 </resources>

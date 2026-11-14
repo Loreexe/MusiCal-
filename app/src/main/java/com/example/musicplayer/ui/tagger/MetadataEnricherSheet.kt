@@ -1,5 +1,6 @@
 package com.example.musicplayer.ui.tagger
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -8,8 +9,11 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,8 +30,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Check
@@ -48,12 +54,13 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -70,22 +77,21 @@ import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.abs
 import coil.compose.AsyncImage
 import com.example.musicplayer.R
 import com.example.musicplayer.data.Album
@@ -98,12 +104,16 @@ import com.example.musicplayer.data.tagger.writer.loadResizedJpegBytesFromUri
 
 sealed class EnricherUiState {
     object Idle : EnricherUiState()
-    data class Loading(val message: String) : EnricherUiState()
+    data class Loading(
+        val message: String,
+        val parentAlbumState: ReviewAlbum? = null
+    ) : EnricherUiState()
     data class ReviewTrack(
         val track: AudioTrack,
         val enriched: EnrichedMetadata,
         val candidates: List<DeezerSearchTrack> = emptyList(),
-        val options: EnricherOptions = EnricherOptions()
+        val options: EnricherOptions = EnricherOptions(),
+        val parentAlbumState: ReviewAlbum? = null
     ) : EnricherUiState()
     data class ReviewAlbum(
         val album: Album,
@@ -111,11 +121,22 @@ sealed class EnricherUiState {
         val individualTracksEnriched: Map<Long, EnrichedMetadata> = tracksEnriched,
         val unifiedTracksEnriched: Map<Long, EnrichedMetadata> = tracksEnriched,
         val options: EnricherOptions = EnricherOptions(),
-        val isSeparationMode: Boolean = false
+        val isSeparationMode: Boolean = false,
+        val manuallyEditedTrackIds: Set<Long> = emptySet(),
+        val movedOutTracks: Map<Long, Pair<AudioTrack, EnrichedMetadata>> = emptyMap(),
+        val trackCustomOptions: Map<Long, EnricherOptions> = emptyMap(),
+        val customAlbumCoverBytes: ByteArray? = null,
+        val editedAlbumTitle: String? = null,
+        val editedAlbumArtist: String? = null,
+        val editedAlbumYear: String? = null,
+        val editedAlbumGenre: String? = null
     ) : EnricherUiState()
     data class Writing(val current: Int, val total: Int, val trackTitle: String) : EnricherUiState()
     data class Success(val message: String) : EnricherUiState()
-    data class Error(val message: String) : EnricherUiState()
+    data class Error(
+        val message: String,
+        val parentAlbumState: ReviewAlbum? = null
+    ) : EnricherUiState()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -128,22 +149,111 @@ fun MetadataEnricherSheet(
     onSelectCandidate: (AudioTrack, DeezerSearchTrack, EnricherOptions) -> Unit = { _, _, _ -> },
     onCustomSearch: (AudioTrack, String, String) -> Unit = { _, _, _ -> },
     onToggleAlbumSeparationMode: ((Boolean) -> Unit)? = null,
+    onEditTrackFromAlbum: (AudioTrack, EnricherUiState.ReviewAlbum) -> Unit = { _, _ -> },
+    onConfirmTrackEditInAlbum: (AudioTrack, EnrichedMetadata, EnricherOptions) -> Unit = { _, _, _ -> },
+    onReturnToAlbumFromTrack: () -> Boolean = { false },
     onRetry: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     if (state is EnricherUiState.Idle) return
 
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val hasParentAlbum = when (state) {
+        is EnricherUiState.ReviewTrack -> state.parentAlbumState != null
+        is EnricherUiState.Loading -> state.parentAlbumState != null
+        is EnricherUiState.Error -> state.parentAlbumState != null
+        else -> false
+    }
+
+    // Traccia se il gesto di trascinamento è iniziato dalla stanghetta grigia in cima al centro (dragHandle)
+    var isDraggingFromHandle by remember { mutableStateOf(false) }
+
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true,
+        confirmValueChange = { targetValue ->
+            if (targetValue == SheetValue.Hidden) {
+                isDraggingFromHandle
+            } else {
+                true
+            }
+        }
+    )
+
+    // Blocca la propagazione di qualsiasi scroll/fling verticale dal corpo interno al ModalBottomSheet
+    val sheetBodyScrollBlocker = remember {
+        object : NestedScrollConnection {
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                return Offset(0f, available.y)
+            }
+
+            override suspend fun onPostFling(
+                consumed: Velocity,
+                available: Velocity
+            ): Velocity {
+                return Velocity(0f, available.y)
+            }
+        }
+    }
+
+    val noopVerticalDraggableState = rememberDraggableState { }
 
     ModalBottomSheet(
-        onDismissRequest = onDismissRequest,
+        onDismissRequest = {
+            if (hasParentAlbum) {
+                if (!onReturnToAlbumFromTrack()) {
+                    onDismissRequest()
+                }
+            } else {
+                onDismissRequest()
+            }
+        },
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
+        dragHandle = {
+            // Unica zona da cui è consentito chiudere il foglio tramite swipe verso il basso
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            awaitFirstDown(pass = PointerEventPass.Initial, requireUnconsumed = false)
+                            isDraggingFromHandle = true
+                        }
+                    }
+                    .padding(top = 14.dp, bottom = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 36.dp, height = 4.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                )
+            }
+        },
         modifier = modifier
     ) {
+        BackHandler(enabled = hasParentAlbum) {
+            onReturnToAlbumFromTrack()
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(pass = PointerEventPass.Initial, requireUnconsumed = false)
+                        isDraggingFromHandle = false
+                    }
+                }
+                .nestedScroll(sheetBodyScrollBlocker)
+                .draggable(
+                    state = noopVerticalDraggableState,
+                    orientation = Orientation.Vertical
+                )
                 .padding(horizontal = 20.dp)
                 .navigationBarsPadding()
                 .padding(bottom = 24.dp)
@@ -155,22 +265,39 @@ fun MetadataEnricherSheet(
                     .fillMaxWidth()
                     .padding(bottom = 16.dp)
             ) {
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
+                if (hasParentAlbum) {
+                    IconButton(
+                        onClick = { onReturnToAlbumFromTrack() },
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.secondaryContainer)
+                    ) {
                         Icon(
-                            imageVector = Icons.Default.AutoFixHigh,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.size(22.dp)
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.autotag_back_to_album),
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.size(20.dp)
                         )
+                    }
+                } else {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.AutoFixHigh,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.width(12.dp))
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = stringResource(R.string.autotag_title),
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
@@ -195,14 +322,26 @@ fun MetadataEnricherSheet(
                     LoadingContent(message = state.message)
                 }
                 is EnricherUiState.ReviewTrack -> {
+                    val isSubWindowOfAlbum = state.parentAlbumState != null
                     ReviewTrackContent(
                         track = state.track,
                         enriched = state.enriched,
                         candidates = state.candidates,
                         initialOptions = state.options,
-                        onCancel = onDismissRequest,
+                        isSubWindowOfAlbum = isSubWindowOfAlbum,
+                        onCancel = {
+                            if (isSubWindowOfAlbum) {
+                                onReturnToAlbumFromTrack()
+                            } else {
+                                onDismissRequest()
+                            }
+                        },
                         onApply = { editedEnriched, options ->
-                            onApplyTrack(state.track, editedEnriched, options)
+                            if (isSubWindowOfAlbum) {
+                                onConfirmTrackEditInAlbum(state.track, editedEnriched, options)
+                            } else {
+                                onApplyTrack(state.track, editedEnriched, options)
+                            }
                         },
                         onSelectCandidate = { candidate ->
                             onSelectCandidate(state.track, candidate, state.options)
@@ -214,11 +353,9 @@ fun MetadataEnricherSheet(
                 }
                 is EnricherUiState.ReviewAlbum -> {
                     ReviewAlbumContent(
-                        album = state.album,
-                        tracksEnriched = state.tracksEnriched,
-                        initialOptions = state.options,
-                        isSeparationMode = state.isSeparationMode,
+                        state = state,
                         onToggleSeparationMode = onToggleAlbumSeparationMode,
+                        onEditSingleTrack = onEditTrackFromAlbum,
                         onCancel = onDismissRequest,
                         onApply = { updatedTracks, options ->
                             onApplyAlbum(state.album, updatedTracks, options)
@@ -241,7 +378,13 @@ fun MetadataEnricherSheet(
                 is EnricherUiState.Error -> {
                     ErrorContent(
                         message = state.message,
-                        onDismiss = onDismissRequest,
+                        onDismiss = {
+                            if (state.parentAlbumState != null) {
+                                onReturnToAlbumFromTrack()
+                            } else {
+                                onDismissRequest()
+                            }
+                        },
                         onRetry = onRetry
                     )
                 }
@@ -281,16 +424,33 @@ private fun ReviewTrackContent(
     enriched: EnrichedMetadata,
     candidates: List<DeezerSearchTrack>,
     initialOptions: EnricherOptions,
+    isSubWindowOfAlbum: Boolean = false,
     onCancel: () -> Unit,
     onApply: (EnrichedMetadata, EnricherOptions) -> Unit,
     onSelectCandidate: (DeezerSearchTrack) -> Unit,
     onCustomSearch: (String, String) -> Unit
 ) {
     val context = LocalContext.current
-    var options by remember { mutableStateOf(initialOptions) }
+    var options by remember(initialOptions) { mutableStateOf(initialOptions) }
     var showLyricsPreview by remember { mutableStateOf(false) }
     var isEditingDetails by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
+    val lyricsScrollState = rememberScrollState()
+
+    val nestedLyricsScrollBlocker = remember {
+        object : NestedScrollConnection {
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset = Offset(0f, available.y)
+
+            override suspend fun onPostFling(
+                consumed: Velocity,
+                available: Velocity
+            ): Velocity = Velocity(0f, available.y)
+        }
+    }
 
     // Gestione copertina personalizzata da galleria
     var customCoverBytes by remember(enriched) { mutableStateOf<ByteArray?>(enriched.coverBytes) }
@@ -512,57 +672,61 @@ private fun ReviewTrackContent(
                             modifier = Modifier.weight(1f).padding(end = 4.dp, top = 4.dp, bottom = 4.dp),
                             singleLine = true
                         )
-                        OutlinedTextField(
+                        AutotagEditTextField(
                             value = editedYear,
                             onValueChange = { editedYear = it },
-                            label = { Text(stringResource(R.string.autotag_tag_year)) },
+                            label = stringResource(R.string.autotag_tag_year),
                             modifier = Modifier.weight(0.6f).padding(start = 4.dp, top = 4.dp, bottom = 4.dp),
                             singleLine = true
                         )
                     }
                     Row(modifier = Modifier.fillMaxWidth()) {
-                        OutlinedTextField(
+                        AutotagEditTextField(
                             value = editedTrackNumber,
                             onValueChange = { editedTrackNumber = it },
-                            label = { Text(stringResource(R.string.autotag_tag_track_num)) },
+                            label = stringResource(R.string.autotag_tag_track_num),
                             modifier = Modifier.weight(1f).padding(end = 4.dp, top = 4.dp, bottom = 4.dp),
                             singleLine = true
                         )
-                        OutlinedTextField(
+                        AutotagEditTextField(
                             value = editedDiscNumber,
                             onValueChange = { editedDiscNumber = it },
-                            label = { Text(stringResource(R.string.autotag_tag_disc_num)) },
+                            label = stringResource(R.string.autotag_tag_disc_num),
                             modifier = Modifier.weight(1f).padding(start = 4.dp, top = 4.dp, bottom = 4.dp),
                             singleLine = true
                         )
                     }
                 } else {
-                    DiffRow(label = stringResource(R.string.autotag_tag_title), oldValue = track.title, newValue = editedTitle)
-                    DiffRow(label = stringResource(R.string.autotag_tag_artist), oldValue = track.artist, newValue = editedArtist)
-                    DiffRow(label = stringResource(R.string.autotag_tag_album), oldValue = track.album, newValue = editedAlbum)
-                    DiffRow(
-                        label = stringResource(R.string.autotag_tag_album_artist_short),
-                        oldValue = track.albumArtist.ifBlank { stringResource(R.string.autotag_not_set) },
-                        newValue = editedAlbumArtist,
-                        highlightBadge = stringResource(R.string.autotag_uniform_album_badge)
-                    )
-                    if (editedYear.isNotBlank()) {
-                        DiffRow(label = stringResource(R.string.autotag_tag_year), oldValue = "-", newValue = editedYear)
-                    }
-                    if (editedTrackNumber.isNotBlank()) {
-                        val discLabel = stringResource(R.string.autotag_disc_format, track.discNumber)
-                        val newDiscLabel = stringResource(R.string.autotag_disc_format, editedDiscNumber.toIntOrNull() ?: 1)
-                        val oldPosStr = if (track.trackNumber > 0) "${track.trackNumber} ($discLabel)" else stringResource(R.string.autotag_not_set_f)
-                        val newPosStr = "$editedTrackNumber ($newDiscLabel)"
-                        DiffRow(
-                            label = stringResource(R.string.autotag_tag_track_disc),
-                            oldValue = oldPosStr,
-                            newValue = newPosStr,
-                            highlightBadge = if (track.trackNumber <= 0 || track.trackNumber.toString() != editedTrackNumber) stringResource(R.string.autotag_position_corrected_badge) else null
-                        )
-                    }
-                    if (editedGenre.isNotBlank()) {
-                        DiffRow(label = stringResource(R.string.autotag_tag_genre), oldValue = track.genre.ifBlank { "-" }, newValue = editedGenre)
+                    SelectionContainer {
+                        Column {
+                            DiffRow(label = stringResource(R.string.autotag_tag_title), oldValue = track.title, newValue = editedTitle)
+                            DiffRow(label = stringResource(R.string.autotag_tag_artist), oldValue = track.artist, newValue = editedArtist)
+                            DiffRow(label = stringResource(R.string.autotag_tag_album), oldValue = track.album, newValue = editedAlbum)
+                            DiffRow(
+                                label = stringResource(R.string.autotag_tag_album_artist_short),
+                                oldValue = track.albumArtist.ifBlank { stringResource(R.string.autotag_not_set) },
+                                newValue = editedAlbumArtist,
+                                highlightBadge = stringResource(R.string.autotag_uniform_album_badge)
+                            )
+                            if (editedYear.isNotBlank()) {
+                                DiffRow(label = stringResource(R.string.autotag_tag_year), oldValue = "-", newValue = editedYear)
+                            }
+                            if (editedTrackNumber.isNotBlank()) {
+                                val discLabel = stringResource(R.string.autotag_disc_format, track.discNumber)
+                                val newDiscLabel = stringResource(R.string.autotag_disc_format, editedDiscNumber.toIntOrNull() ?: 1)
+                                val oldPosStr = if (track.trackNumber > 0) "${track.trackNumber} ($discLabel)" else stringResource(R.string.autotag_not_set_f)
+                                val newPosStr = "$editedTrackNumber ($newDiscLabel)"
+                                DiffRow(
+                                    label = stringResource(R.string.autotag_tag_track_disc),
+                                    oldValue = oldPosStr,
+                                    newValue = newPosStr,
+                                    highlightBadge = if (track.trackNumber <= 0 || track.trackNumber.toString() != editedTrackNumber) stringResource(R.string.autotag_position_corrected_badge) else null
+                                )
+                            }
+                            if (editedGenre.isNotBlank()) {
+                                DiffRow(label = stringResource(R.string.autotag_tag_genre), oldValue = track.genre.ifBlank { "-" }, newValue = editedGenre)
+                            }
+                        }
                     }
                 }
             }
@@ -611,17 +775,17 @@ private fun ReviewTrackContent(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            OutlinedTextField(
+                            AutotagEditTextField(
                                 value = customSearchTitle,
                                 onValueChange = { customSearchTitle = it },
-                                label = { Text(stringResource(R.string.autotag_tag_title)) },
+                                label = stringResource(R.string.autotag_tag_title),
                                 modifier = Modifier.weight(1f).padding(end = 4.dp),
                                 singleLine = true
                             )
-                            OutlinedTextField(
+                            AutotagEditTextField(
                                 value = customSearchArtist,
                                 onValueChange = { customSearchArtist = it },
-                                label = { Text(stringResource(R.string.autotag_tag_artist)) },
+                                label = stringResource(R.string.autotag_tag_artist),
                                 modifier = Modifier.weight(1f).padding(start = 4.dp),
                                 singleLine = true
                             )
@@ -718,19 +882,19 @@ private fun ReviewTrackContent(
                 enriched.hasPlainLyrics -> Color(0xFFE65100).copy(alpha = 0.15f)
                 else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
             },
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable {
-                    if (enriched.hasPlainLyrics || enriched.hasSyncedLyrics) {
-                        showLyricsPreview = !showLyricsPreview
-                    }
-                }
+            modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            if (enriched.hasPlainLyrics || enriched.hasSyncedLyrics) {
+                                showLyricsPreview = !showLyricsPreview
+                            }
+                        }
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
@@ -766,24 +930,25 @@ private fun ReviewTrackContent(
                     }
                 }
 
-                // Anteprima versi espandibile
+                // Anteprima versi espandibile, scorrevole col dito e selezionabile (long-press copia)
                 AnimatedVisibility(visible = showLyricsPreview) {
-                    val previewText = (enriched.syncedLyrics ?: enriched.plainLyrics).orEmpty()
-                        .lines()
-                        .take(6)
-                        .joinToString("\n")
+                    val fullLyricsText = (enriched.syncedLyrics ?: enriched.plainLyrics).orEmpty().trim()
 
-                    Column(modifier = Modifier.padding(top = 8.dp)) {
-                        Text(
-                            text = previewText,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    SelectionContainer {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                                .heightIn(max = 180.dp)
+                                .nestedScroll(nestedLyricsScrollBlocker)
+                                .verticalScroll(lyricsScrollState)
+                        ) {
+                            Text(
+                                text = fullLyricsText,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
@@ -821,7 +986,10 @@ private fun ReviewTrackContent(
             horizontalArrangement = Arrangement.End
         ) {
             TextButton(onClick = onCancel) {
-                Text(stringResource(R.string.cancel))
+                Text(
+                    if (isSubWindowOfAlbum) stringResource(R.string.autotag_back_to_album)
+                    else stringResource(R.string.cancel)
+                )
             }
             Spacer(modifier = Modifier.width(10.dp))
             Button(
@@ -846,7 +1014,10 @@ private fun ReviewTrackContent(
             ) {
                 Icon(imageVector = Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(stringResource(R.string.autotag_apply_and_save))
+                Text(
+                    if (isSubWindowOfAlbum) stringResource(R.string.autotag_apply_to_track)
+                    else stringResource(R.string.autotag_apply_and_save)
+                )
             }
         }
     }
@@ -854,28 +1025,38 @@ private fun ReviewTrackContent(
 
 @Composable
 private fun ReviewAlbumContent(
-    album: Album,
-    tracksEnriched: Map<Long, EnrichedMetadata>,
-    initialOptions: EnricherOptions,
-    isSeparationMode: Boolean = false,
+    state: EnricherUiState.ReviewAlbum,
     onToggleSeparationMode: ((Boolean) -> Unit)? = null,
+    onEditSingleTrack: (AudioTrack, EnricherUiState.ReviewAlbum) -> Unit = { _, _ -> },
     onCancel: () -> Unit,
     onApply: (Map<Long, EnrichedMetadata>, EnricherOptions) -> Unit
 ) {
+    val album = state.album
+    val tracksEnriched = state.tracksEnriched
+    val isSeparationMode = state.isSeparationMode
+
     val context = LocalContext.current
-    var options by remember { mutableStateOf(initialOptions) }
+    var options by remember(state.options) { mutableStateOf(state.options) }
     val scrollState = rememberScrollState()
 
-    var customAlbumCoverBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var customAlbumCoverBytes by remember(state.customAlbumCoverBytes) { mutableStateOf(state.customAlbumCoverBytes) }
     var currentTracksEnriched by remember(tracksEnriched) { mutableStateOf(tracksEnriched) }
 
     val firstEnriched = remember(tracksEnriched) { tracksEnriched.values.firstOrNull() }
 
     var isEditingAlbumDetails by remember { mutableStateOf(false) }
-    var editedAlbumTitle by remember(firstEnriched?.album) { mutableStateOf(firstEnriched?.album ?: album.title) }
-    var editedAlbumArtist by remember(firstEnriched?.albumArtist) { mutableStateOf(firstEnriched?.albumArtist ?: album.artist) }
-    var editedAlbumYear by remember(firstEnriched?.releaseYear) { mutableStateOf(firstEnriched?.releaseYear?.toString().orEmpty()) }
-    var editedAlbumGenre by remember(firstEnriched?.genre) { mutableStateOf(firstEnriched?.genre.orEmpty()) }
+    var editedAlbumTitle by remember(state.editedAlbumTitle, firstEnriched?.album) {
+        mutableStateOf(state.editedAlbumTitle ?: firstEnriched?.album ?: album.title)
+    }
+    var editedAlbumArtist by remember(state.editedAlbumArtist, firstEnriched?.albumArtist) {
+        mutableStateOf(state.editedAlbumArtist ?: firstEnriched?.albumArtist ?: album.artist)
+    }
+    var editedAlbumYear by remember(state.editedAlbumYear, firstEnriched?.releaseYear) {
+        mutableStateOf(state.editedAlbumYear ?: firstEnriched?.releaseYear?.toString().orEmpty())
+    }
+    var editedAlbumGenre by remember(state.editedAlbumGenre, firstEnriched?.genre) {
+        mutableStateOf(state.editedAlbumGenre ?: firstEnriched?.genre.orEmpty())
+    }
 
     fun updateTracksWithCurrentCustomizations(
         title: String = editedAlbumTitle,
@@ -906,7 +1087,6 @@ private fun ReviewAlbumContent(
 
     LaunchedEffect(tracksEnriched) {
         currentTracksEnriched = tracksEnriched
-        updateTracksWithCurrentCustomizations()
     }
 
     val albumCoverPickerLauncher = rememberLauncherForActivityResult(
@@ -1161,30 +1341,34 @@ private fun ReviewAlbumContent(
                                 modifier = Modifier.weight(1f).padding(end = 4.dp, top = 4.dp, bottom = 4.dp),
                                 singleLine = true
                             )
-                            OutlinedTextField(
+                            AutotagEditTextField(
                                 value = editedAlbumYear,
                                 onValueChange = {
                                     editedAlbumYear = it
                                     updateTracksWithCurrentCustomizations(yearStr = it)
                                 },
-                                label = { Text(stringResource(R.string.autotag_tag_year)) },
+                                label = stringResource(R.string.autotag_tag_year),
                                 modifier = Modifier.weight(0.6f).padding(start = 4.dp, top = 4.dp, bottom = 4.dp),
                                 singleLine = true
                             )
                         }
                     } else {
-                        DiffRow(label = stringResource(R.string.autotag_tag_album), oldValue = album.title, newValue = editedAlbumTitle)
-                        DiffRow(
-                            label = stringResource(R.string.autotag_tag_album_artist_unique_badge),
-                            oldValue = album.artist,
-                            newValue = editedAlbumArtist,
-                            highlightBadge = stringResource(R.string.autotag_group_all_tracks_badge)
-                        )
-                        if (editedAlbumYear.isNotBlank()) {
-                            DiffRow(label = stringResource(R.string.autotag_tag_year), oldValue = "-", newValue = editedAlbumYear)
-                        }
-                        if (editedAlbumGenre.isNotBlank()) {
-                            DiffRow(label = stringResource(R.string.autotag_tag_genre), oldValue = "-", newValue = editedAlbumGenre)
+                        SelectionContainer {
+                            Column {
+                                DiffRow(label = stringResource(R.string.autotag_tag_album), oldValue = album.title, newValue = editedAlbumTitle)
+                                DiffRow(
+                                    label = stringResource(R.string.autotag_tag_album_artist_unique_badge),
+                                    oldValue = album.artist,
+                                    newValue = editedAlbumArtist,
+                                    highlightBadge = stringResource(R.string.autotag_group_all_tracks_badge)
+                                )
+                                if (editedAlbumYear.isNotBlank()) {
+                                    DiffRow(label = stringResource(R.string.autotag_tag_year), oldValue = "-", newValue = editedAlbumYear)
+                                }
+                                if (editedAlbumGenre.isNotBlank()) {
+                                    DiffRow(label = stringResource(R.string.autotag_tag_genre), oldValue = "-", newValue = editedAlbumGenre)
+                                }
+                            }
                         }
                     }
                 }
@@ -1193,7 +1377,7 @@ private fun ReviewAlbumContent(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Lista delle tracce con nuovo numero di traccia
+        // Lista delle tracce con nuovo numero di traccia e pulsante matita a destra
         Text(
             text = if (isSeparationMode) stringResource(R.string.autotag_dest_tracks_separate) else stringResource(R.string.autotag_dest_tracks_unify),
             style = MaterialTheme.typography.labelLarge,
@@ -1205,7 +1389,7 @@ private fun ReviewAlbumContent(
             album.tracks.sortedWith(
                 compareBy<AudioTrack> { currentTracksEnriched[it.id]?.discNumber ?: it.discNumber }
                     .thenBy { currentTracksEnriched[it.id]?.trackNumber ?: it.trackNumber }
-                    .thenBy { it.title }
+                    .thenBy { currentTracksEnriched[it.id]?.title ?: it.title }
             )
         }
 
@@ -1214,6 +1398,8 @@ private fun ReviewAlbumContent(
             val disc = enriched?.discNumber ?: track.discNumber
             val pos = enriched?.trackNumber ?: track.trackNumber
             val posChanged = track.trackNumber <= 0 || track.trackNumber != enriched?.trackNumber
+            val isManuallyEdited = track.id in state.manuallyEditedTrackIds
+
             Surface(
                 shape = RoundedCornerShape(8.dp),
                 color = MaterialTheme.colorScheme.surface,
@@ -1222,7 +1408,7 @@ private fun ReviewAlbumContent(
                     .padding(vertical = 3.dp)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     val positionText = if (disc > 1) "D$disc.$pos." else "$pos."
@@ -1257,7 +1443,17 @@ private fun ReviewAlbumContent(
                             )
                         }
                     }
-                    if (posChanged && pos > 0) {
+                    if (isManuallyEdited) {
+                        Text(
+                            text = stringResource(R.string.autotag_edited_track_badge),
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier
+                                .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.14f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                    } else if (posChanged && pos > 0) {
                         Text(
                             text = stringResource(R.string.autotag_track_position, pos.toString()),
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
@@ -1266,7 +1462,7 @@ private fun ReviewAlbumContent(
                                 .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                     }
                     if (enriched?.hasSyncedLyrics == true) {
                         Text(
@@ -1277,8 +1473,47 @@ private fun ReviewAlbumContent(
                                 .background(Color(0xFF4CAF50).copy(alpha = 0.15f), RoundedCornerShape(4.dp))
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         )
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
+                    IconButton(
+                        onClick = {
+                            val snapshot = state.copy(
+                                tracksEnriched = currentTracksEnriched,
+                                options = options,
+                                customAlbumCoverBytes = customAlbumCoverBytes,
+                                editedAlbumTitle = editedAlbumTitle,
+                                editedAlbumArtist = editedAlbumArtist,
+                                editedAlbumYear = editedAlbumYear,
+                                editedAlbumGenre = editedAlbumGenre
+                            )
+                            onEditSingleTrack(track, snapshot)
+                        },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = stringResource(R.string.autotag_edit_single_track),
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
+            }
+        }
+
+        if (state.movedOutTracks.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = stringResource(R.string.autotag_moved_tracks_notice, state.movedOutTracks.size),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                )
             }
         }
 
@@ -1551,74 +1786,27 @@ private fun AutotagEditTextField(
     placeholder: String? = null,
     singleLine: Boolean = true
 ) {
-    var textFieldValue by remember(value) {
-        mutableStateOf(TextFieldValue(text = value, selection = TextRange(value.length)))
-    }
+    val textFieldNestedScrollBlocker = remember {
+        object : NestedScrollConnection {
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset = available
 
-    LaunchedEffect(value) {
-        if (value != textFieldValue.text) {
-            val safeSelection = TextRange(textFieldValue.selection.end.coerceIn(0, value.length))
-            textFieldValue = textFieldValue.copy(text = value, selection = safeSelection)
+            override suspend fun onPostFling(
+                consumed: Velocity,
+                available: Velocity
+            ): Velocity = available
         }
     }
 
-    val density = LocalDensity.current
-    val pxPerChar = remember(density) { with(density) { 5.5.dp.toPx() } }
-    val focusRequester = remember { FocusRequester() }
-
     OutlinedTextField(
-        value = textFieldValue,
-        onValueChange = { newValue ->
-            textFieldValue = newValue
-            onValueChange(newValue.text)
-        },
+        value = value,
+        onValueChange = onValueChange,
         label = { Text(label) },
         placeholder = placeholder?.let { { Text(it) } },
         singleLine = singleLine,
-        modifier = modifier
-            .focusRequester(focusRequester)
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(pass = PointerEventPass.Initial, requireUnconsumed = false)
-                    var isHorizontalDrag = false
-                    var accumulatedDragX = 0f
-                    var lastPositionX = down.position.x
-
-                    while (true) {
-                        val event = awaitPointerEvent(pass = PointerEventPass.Initial)
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        if (!change.pressed) break
-
-                        val deltaX = change.position.x - down.position.x
-                        val deltaY = change.position.y - down.position.y
-
-                        if (!isHorizontalDrag) {
-                            if (abs(deltaX) > 8f && abs(deltaX) > abs(deltaY) * 1.2f) {
-                                isHorizontalDrag = true
-                                focusRequester.requestFocus()
-                                accumulatedDragX = 0f
-                                lastPositionX = change.position.x
-                            }
-                        }
-
-                        if (isHorizontalDrag) {
-                            change.consume()
-                            val stepX = change.position.x - lastPositionX
-                            lastPositionX = change.position.x
-                            accumulatedDragX += stepX
-
-                            val charOffset = (accumulatedDragX / pxPerChar).toInt()
-                            if (charOffset != 0) {
-                                val currentCursor = textFieldValue.selection.end
-                                val newCursor = (currentCursor + charOffset).coerceIn(0, textFieldValue.text.length)
-                                if (newCursor != currentCursor) {
-                                    textFieldValue = textFieldValue.copy(selection = TextRange(newCursor))
-                                }
-                                accumulatedDragX -= charOffset * pxPerChar
-                            }
-                        }
-                    }
-                }
-            }
+        modifier = modifier.nestedScroll(textFieldNestedScrollBlocker)
     )
 }

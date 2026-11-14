@@ -146,6 +146,7 @@ import com.example.musicplayer.ui.components.LastFmDialog
 import com.example.musicplayer.ui.components.MainModalsHost
 import com.example.musicplayer.ui.components.PlaybackStatsDialog
 import com.example.musicplayer.ui.components.PlayerBottomBar
+import com.example.musicplayer.ui.components.PlaylistCoverCropperDialog
 import com.example.musicplayer.ui.components.PlaylistDetailView
 import com.example.musicplayer.ui.components.PlaylistsView
 import com.example.musicplayer.ui.components.QueueBottomSheet
@@ -325,6 +326,7 @@ fun MainScreen(
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var trackToAddToPlaylist by remember { mutableStateOf<AudioTrack?>(null) }
     var playlistForCoverChange by remember { mutableStateOf<Playlist?>(null) }
+    var pendingPlaylistCoverCrop by remember { mutableStateOf<Pair<Playlist, android.net.Uri>?>(null) }
 
     val favoriteTrackIds = remember(playlists) {
         playlists.find { it.isFavorites }?.trackIds?.toSet() ?: emptySet()
@@ -378,14 +380,25 @@ fun MainScreen(
         val targetPlaylist = playlistForCoverChange
         playlistForCoverChange = null
         if (uri != null && targetPlaylist != null && !targetPlaylist.isFavorites) {
-            viewModel.updatePlaylistCover(targetPlaylist.id, uri)
-            coroutineScope.launch {
-                snackbarHostState.showSnackbar(
-                    message = context.getString(R.string.snackbar_cover_updated, targetPlaylist.name),
-                    duration = SnackbarDuration.Short
-                )
-            }
+            pendingPlaylistCoverCrop = targetPlaylist to uri
         }
+    }
+
+    pendingPlaylistCoverCrop?.let { (targetPlaylist, rawUri) ->
+        PlaylistCoverCropperDialog(
+            sourceUri = rawUri,
+            onDismiss = { pendingPlaylistCoverCrop = null },
+            onConfirm = { croppedUri ->
+                pendingPlaylistCoverCrop = null
+                viewModel.updatePlaylistCover(targetPlaylist.id, croppedUri)
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar(
+                        message = context.getString(R.string.snackbar_cover_updated, targetPlaylist.name),
+                        duration = SnackbarDuration.Short
+                    )
+                }
+            }
+        )
     }
 
     val handleChangePlaylistCover: (Playlist) -> Unit = remember(playlistCoverPickerLauncher) {
@@ -1330,6 +1343,7 @@ fun MainScreen(
                                                                     onAddToQueueClick = handleAddAlbumToQueue,
                                                                     onAutoTagAlbumClick = { viewModel.startAlbumEnrichment(it, separateAlbums = false) },
                                                                     onAutoTagAlbumSeparationClick = { viewModel.startAlbumEnrichment(it, separateAlbums = true) },
+                                                                    onArtistClick = { artist -> selectedArtistForSheet = artist },
                                                                     state = albumsGridState,
                                                                     isAlphabetical = sortOption == SortOption.ALPHABETICAL,
                                                                     letterProvider = { index ->

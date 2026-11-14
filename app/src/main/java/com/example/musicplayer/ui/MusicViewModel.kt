@@ -582,6 +582,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun startAlbumEnrichment(album: Album, separateAlbums: Boolean? = null) =
         metadataEnricherCoordinator.startAlbumEnrichment(album, separateAlbums)
     fun toggleAlbumEnrichmentMode(separate: Boolean) = metadataEnricherCoordinator.toggleAlbumEnrichmentMode(separate)
+    fun openTrackEditorFromAlbum(track: AudioTrack, albumSnapshot: EnricherUiState.ReviewAlbum) =
+        metadataEnricherCoordinator.openTrackEditorFromAlbum(track, albumSnapshot)
+    fun confirmTrackEditInAlbum(track: AudioTrack, editedMetadata: EnrichedMetadata, trackOptions: EnricherOptions) =
+        metadataEnricherCoordinator.confirmTrackEditInAlbum(track, editedMetadata, trackOptions)
+    fun returnToAlbumFromTrackEditor(): Boolean = metadataEnricherCoordinator.returnToAlbumFromTrackEditor()
     fun applyTrackEnrichment(track: AudioTrack, metadata: EnrichedMetadata, options: EnricherOptions) =
         metadataEnricherCoordinator.applyTrackEnrichment(track, metadata, options)
     fun applyAlbumEnrichment(album: Album, tracksEnriched: Map<Long, EnrichedMetadata>, options: EnricherOptions) =

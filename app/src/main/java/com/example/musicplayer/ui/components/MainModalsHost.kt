@@ -379,10 +379,24 @@ fun MainModalsHost(
             viewModel.searchCustomTrackEnrichment(track, title, artist)
         },
         onToggleAlbumSeparationMode = { viewModel.toggleAlbumEnrichmentMode(it) },
+        onEditTrackFromAlbum = { track, albumSnapshot ->
+            viewModel.openTrackEditorFromAlbum(track, albumSnapshot)
+        },
+        onConfirmTrackEditInAlbum = { track, editedMetadata, trackOptions ->
+            viewModel.confirmTrackEditInAlbum(track, editedMetadata, trackOptions)
+        },
+        onReturnToAlbumFromTrack = { viewModel.returnToAlbumFromTrackEditor() },
         onRetry = {
             when (val s = enricherState) {
                 is com.example.musicplayer.ui.tagger.EnricherUiState.ReviewTrack -> viewModel.startTrackEnrichment(s.track)
                 is com.example.musicplayer.ui.tagger.EnricherUiState.ReviewAlbum -> viewModel.startAlbumEnrichment(s.album)
+                is com.example.musicplayer.ui.tagger.EnricherUiState.Error -> {
+                    if (s.parentAlbumState != null) {
+                        viewModel.returnToAlbumFromTrackEditor()
+                    } else {
+                        viewModel.closeEnricher()
+                    }
+                }
                 else -> viewModel.closeEnricher()
             }
         }

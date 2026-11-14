@@ -20,6 +20,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -453,9 +454,24 @@ fun PlaylistDetailView(
         label = "PlaylistCollapseFraction"
     )
 
+    var showCoverZoom by remember { mutableStateOf(false) }
+    val hasZoomableCover = playlist.isFavorites || playlist.effectiveCoverUri != null
+
+    if (showCoverZoom && hasZoomableCover) {
+        CoverZoomDialog(
+            title = if (playlist.isFavorites) stringResource(R.string.playlist_favorites_title) else playlist.name,
+            coverModel = playlist.effectiveCoverUri,
+            isFavorites = playlist.isFavorites,
+            onDismiss = { showCoverZoom = false }
+        )
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
+            .let { base ->
+                if (showCoverZoom) base.blur(20.dp) else base
+            }
             .nestedScroll(nestedScrollConnection)
     ) {
         // Header compatto a riga singola identico a quello degli Album: incastrato tra freccia indietro (←) e menu a tre puntini (⋮)
@@ -497,8 +513,8 @@ fun PlaylistDetailView(
                     }
                     .clip(RoundedCornerShape(10.dp))
                     .let { baseModifier ->
-                        if (!playlist.isFavorites && onChangeCoverClick != null) {
-                            baseModifier.clickable { onChangeCoverClick(playlist) }
+                        if (hasZoomableCover) {
+                            baseModifier.clickable { showCoverZoom = true }
                         } else {
                             baseModifier
                         }
@@ -876,13 +892,25 @@ fun CreatePlaylistDialog(
 ) {
     var name by remember { mutableStateOf("") }
     var selectedCoverUri by remember { mutableStateOf<Uri?>(null) }
+    var rawUriToCrop by remember { mutableStateOf<Uri?>(null) }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            selectedCoverUri = uri
+            rawUriToCrop = uri
         }
+    }
+
+    rawUriToCrop?.let { sourceUri ->
+        PlaylistCoverCropperDialog(
+            sourceUri = sourceUri,
+            onDismiss = { rawUriToCrop = null },
+            onConfirm = { croppedUri ->
+                selectedCoverUri = croppedUri
+                rawUriToCrop = null
+            }
+        )
     }
 
     AlertDialog(

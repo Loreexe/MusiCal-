@@ -238,7 +238,8 @@ fun GlobalSearchResultsView(
                         album = album,
                         onClick = { onAlbumClick(album) },
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                        onAddToQueueClick = onAddAlbumToQueueClick
+                        onAddToQueueClick = onAddAlbumToQueueClick,
+                        onArtistClick = onArtistClick
                     )
                 }
             }

@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material3.DropdownMenu
@@ -326,6 +327,7 @@ fun AlbumDetailView(
 
             // 5. Menu opzioni a tre puntini (⋮) a destra
             var menuExpanded by remember { mutableStateOf(false) }
+            val resolvedArtist = remember(album) { album.resolvableArtist() }
             Box {
                 IconButton(
                     onClick = { menuExpanded = true },
@@ -340,6 +342,22 @@ fun AlbumDetailView(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false }
                 ) {
+                    if (onArtistClick != null && resolvedArtist != null) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.player_menu_view_artist)) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Person,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onArtistClick(resolvedArtist)
+                            }
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.player_menu_add_to_queue)) },
                         leadingIcon = {

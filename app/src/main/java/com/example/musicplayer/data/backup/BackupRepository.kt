@@ -38,7 +38,10 @@ class BackupRepository(
 ) {
     companion object {
         const val BACKUP_VERSION = 1
-        private const val MAX_BACKUP_BYTES = 10 * 1024 * 1024 // 10 MB
+        private const val MAX_BACKUP_BYTES = 30 * 1024 * 1024 // 30 MB (include copertine playlist Base64)
+        private const val MAX_COVER_BYTES = 4 * 1024 * 1024 // 4 MB max per singola copertina
+        private const val COMPACT_THRESHOLD_BYTES = 180 * 1024 // 180 KB
+        private const val COMPACT_MAX_DIM_PX = 640
         private const val DURATION_MATCH_TOLERANCE_MS = 2_000L
         private const val MAX_STRING_LENGTH = 500
     }
@@ -89,12 +92,22 @@ class BackupRepository(
                 val track = trackById[trackId] ?: continue
                 tracksArray.put(trackToJson(track))
             }
+            val coverBase64 = if (!playlist.isFavorites) {
+                playlistRepository.readPlaylistCoverBytes(playlist)
+                    ?.takeIf { it.isNotEmpty() && it.size <= MAX_COVER_BYTES }
+                    ?.let { rawBytes -> compactCoverBytesIfNeeded(rawBytes) }
+                    ?.let { bytes -> java.util.Base64.getEncoder().encodeToString(bytes) }
+            } else null
+
             playlistsArray.put(
                 JSONObject().apply {
                     put("id", playlist.id)
                     put("name", playlist.name)
                     put("isFavorites", playlist.isFavorites)
                     put("tracks", tracksArray)
+                    if (!coverBase64.isNullOrBlank()) {
+                        put("coverBase64", coverBase64)
+                    }
                 }
             )
         }
@@ -270,6 +283,11 @@ class BackupRepository(
                     modified = true
                 }
             } else if (rawName.isNotBlank()) {
+                val rawCoverBase64 = obj.optString("coverBase64", "").trim()
+                val decodedCoverBytes = if (rawCoverBase64.isNotEmpty()) {
+                    decodeValidCoverBase64(rawCoverBase64)
+                } else null
+
                 val matchIdx = existing.indexOfFirst {
                     !it.isFavorites && (
                         (rawId.isNotBlank() && it.id == rawId) ||
@@ -280,18 +298,31 @@ class BackupRepository(
                     val current = existing[matchIdx]
                     val currentSet = current.trackIds.toHashSet()
                     val toAdd = matchedIds.filter { currentSet.add(it) }
-                    if (toAdd.isNotEmpty()) {
-                        existing[matchIdx] = current.copy(trackIds = current.trackIds + toAdd)
+                    val needsCoverRestore = decodedCoverBytes != null &&
+                        (current.coverUri.isNullOrBlank() || playlistRepository.readPlaylistCoverBytes(current) == null)
+                    val restoredCoverUri = if (needsCoverRestore) {
+                        playlistRepository.writeCoverFileFromBytes(current.id, decodedCoverBytes!!)
+                    } else null
+
+                    if (toAdd.isNotEmpty() || restoredCoverUri != null) {
+                        existing[matchIdx] = current.copy(
+                            trackIds = if (toAdd.isNotEmpty()) current.trackIds + toAdd else current.trackIds,
+                            coverUri = restoredCoverUri ?: current.coverUri
+                        )
                         updatedCount++
                         modified = true
                     }
                 } else {
                     val newId = rawId.ifBlank { UUID.randomUUID().toString() }
+                    val restoredCoverUri = if (decodedCoverBytes != null) {
+                        playlistRepository.writeCoverFileFromBytes(newId, decodedCoverBytes)
+                    } else null
                     existing.add(
                         Playlist(
                             id = newId,
                             name = rawName,
-                            trackIds = matchedIds
+                            trackIds = matchedIds,
+                            coverUri = restoredCoverUri
                         )
                     )
                     importedCount++
@@ -507,6 +538,61 @@ class BackupRepository(
     private fun sanitize(value: String): String {
         val trimmed = value.trim()
         return if (trimmed.length > MAX_STRING_LENGTH) trimmed.substring(0, MAX_STRING_LENGTH) else trimmed
+    }
+
+    /**
+     * Comprime i byte della copertina in JPEG compatto se superano [COMPACT_THRESHOLD_BYTES].
+     * In ambiente JVM di test (dove BitmapFactory restituisce null), conserva i byte originali.
+     */
+    private fun compactCoverBytesIfNeeded(rawBytes: ByteArray): ByteArray {
+        if (rawBytes.size <= COMPACT_THRESHOLD_BYTES) return rawBytes
+        return try {
+            val decoded = android.graphics.BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
+                ?: return rawBytes
+            val maxSide = maxOf(decoded.width, decoded.height)
+            val scaled = if (maxSide > COMPACT_MAX_DIM_PX && maxSide > 0) {
+                val ratio = COMPACT_MAX_DIM_PX.toFloat() / maxSide
+                val targetW = (decoded.width * ratio).toInt().coerceAtLeast(1)
+                val targetH = (decoded.height * ratio).toInt().coerceAtLeast(1)
+                android.graphics.Bitmap.createScaledBitmap(decoded, targetW, targetH, true)
+            } else {
+                decoded
+            }
+            val out = ByteArrayOutputStream()
+            val ok = scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+            if (scaled !== decoded) scaled.recycle()
+            decoded.recycle()
+            val compacted = out.toByteArray()
+            if (ok && compacted.isNotEmpty() && compacted.size < rawBytes.size) compacted else rawBytes
+        } catch (_: Throwable) {
+            rawBytes
+        }
+    }
+
+    /**
+     * Decodifica una stringa Base64 e verifica che corrisponda a un formato immagine valido
+     * (JPEG, PNG o WebP) entro i limiti di sicurezza.
+     */
+    private fun decodeValidCoverBase64(base64Str: String): ByteArray? {
+        return try {
+            val bytes = java.util.Base64.getDecoder().decode(base64Str)
+            if (bytes.size !in 4..MAX_COVER_BYTES) return null
+            val b0 = bytes[0].toInt() and 0xFF
+            val b1 = bytes[1].toInt() and 0xFF
+            val b2 = bytes[2].toInt() and 0xFF
+            val b3 = bytes[3].toInt() and 0xFF
+            val isJpeg = b0 == 0xFF && b1 == 0xD8 && b2 == 0xFF
+            val isPng = b0 == 0x89 && b1 == 0x50 && b2 == 0x4E && b3 == 0x47
+            val isWebp = bytes.size >= 12 &&
+                b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46 &&
+                (bytes[8].toInt() and 0xFF) == 0x57 &&
+                (bytes[9].toInt() and 0xFF) == 0x45 &&
+                (bytes[10].toInt() and 0xFF) == 0x42 &&
+                (bytes[11].toInt() and 0xFF) == 0x50
+            if (isJpeg || isPng || isWebp) bytes else null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun norm(value: String): String = value.trim().lowercase()
