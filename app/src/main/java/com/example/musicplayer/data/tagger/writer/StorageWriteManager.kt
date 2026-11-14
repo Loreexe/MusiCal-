@@ -6,11 +6,14 @@ import android.content.Context
 import android.content.IntentSender
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.provider.MediaStore
 import androidx.exifinterface.media.ExifInterface
+import com.example.musicplayer.data.Album
 import com.example.musicplayer.data.AudioTrack
+import com.example.musicplayer.data.TaggedCoverStore
 import com.example.musicplayer.data.tagger.model.EnrichedMetadata
 import com.example.musicplayer.data.tagger.repository.EnricherOptions
 import kotlinx.coroutines.Dispatchers
@@ -93,6 +96,13 @@ class StorageWriteManager(private val context: Context) {
         metadata: EnrichedMetadata
     ): Boolean = withContext(Dispatchers.IO) {
         try {
+            // 0. Estrazione / persistenza della copertina nello store locale prima che preparedFile venga rimosso
+            val coverToPersist = metadata.coverBytes?.takeIf { it.isNotEmpty() }
+                ?: AudioTagWriter.extractEmbeddedCoverBytes(preparedFile)
+            if (coverToPersist != null && coverToPersist.isNotEmpty()) {
+                TaggedCoverStore.saveTrackCover(context, track.id, coverToPersist)
+            }
+
             // 1. Scrittura fisica sullo stream del MediaStore
             context.contentResolver.openOutputStream(track.uri, "rwt")?.use { output ->
                 FileInputStream(preparedFile).use { input ->
@@ -108,7 +118,37 @@ class StorageWriteManager(private val context: Context) {
                 saveLyricsLocally(track.id, "[instrumental:true]\n")
             }
 
-            // 3. Aggiornamento esplicito delle colonne nel database MediaStore
+            // 3. Notifica e attesa completamento scansione MediaScannerConnection PRIMA di contentResolver.update,
+            // così che ModernMediaScanner di Android 16 rilevi il file modificato ed estragga la copertina APIC/FLAC
+            // per il nuovo album_id prima che le colonne vengano allineate via ContentResolver.
+            try {
+                val externalDir = android.os.Environment.getExternalStorageDirectory()
+                val physicalFile = if (track.relativePath.isNotBlank() && track.displayName.isNotBlank()) {
+                    File(externalDir, "${track.relativePath}${track.displayName}")
+                } else null
+
+                if (physicalFile != null && physicalFile.exists()) {
+                    try {
+                        physicalFile.setLastModified(System.currentTimeMillis() + 1000L)
+                    } catch (_: Exception) {}
+                    val targetPath = physicalFile.absolutePath
+                    withTimeoutOrNull(3000L) {
+                        suspendCancellableCoroutine<Unit> { continuation ->
+                            MediaScannerConnection.scanFile(
+                                context,
+                                arrayOf(targetPath),
+                                null
+                            ) { _, _ ->
+                                if (continuation.isActive) {
+                                    continuation.resume(Unit)
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+
+            // 4. Aggiornamento esplicito delle colonne nel database MediaStore
             try {
                 val values = ContentValues().apply {
                     put(MediaStore.Audio.Media.TITLE, metadata.title)
@@ -129,37 +169,44 @@ class StorageWriteManager(private val context: Context) {
                 // Se l'aggiornamento diretto dei campi DB non è supportato da qualche colonna, si affida al MediaScanner
             }
 
-            // 4. Notifica e attesa completamento scansione MediaScannerConnection sul file effettivo nello storage
-            try {
-                val externalDir = android.os.Environment.getExternalStorageDirectory()
-                val physicalFile = if (track.relativePath.isNotBlank() && track.displayName.isNotBlank()) {
-                    File(externalDir, "${track.relativePath}${track.displayName}")
-                } else null
-
-                val targetPath = physicalFile?.takeIf { it.exists() }?.absolutePath
-                if (targetPath != null) {
-                    withTimeoutOrNull(3000L) {
-                        suspendCancellableCoroutine<Unit> { continuation ->
-                            MediaScannerConnection.scanFile(
-                                context,
-                                arrayOf(targetPath),
-                                null
-                            ) { _, _ ->
-                                if (continuation.isActive) {
-                                    continuation.resume(Unit)
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (_: Exception) {}
-
             true
         } catch (e: Exception) {
             e.printStackTrace()
             false
         } finally {
             preparedFile.delete()
+        }
+    }
+
+    /**
+     * Estrae la copertina preesistente di un album leggendo i frame embedded dei brani o l'URI di copertina corrente.
+     * Utile come fallback quando si uniforma un album senza che sia stata trovata una nuova copertina online,
+     * evitando che il cambio di album_id in MediaStore lasci l'album privo di copertina.
+     */
+    fun extractExistingAlbumCoverBytes(album: Album): ByteArray? {
+        for (track in album.tracks) {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(context, track.uri)
+                val embedded = retriever.embeddedPicture
+                if (embedded != null && embedded.isNotEmpty()) {
+                    return embedded
+                }
+            } catch (_: Exception) {
+            } finally {
+                try {
+                    retriever.release()
+                } catch (_: Exception) {}
+            }
+        }
+        val artUri = album.albumArtUri ?: return null
+        return try {
+            context.contentResolver.openInputStream(artUri)?.use { input ->
+                val bytes = input.readBytes()
+                bytes.takeIf { it.isNotEmpty() }
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 

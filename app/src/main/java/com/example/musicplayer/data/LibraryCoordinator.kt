@@ -365,11 +365,13 @@ class LibraryCoordinator(
         val patchedTracks = currentTracks.map { track ->
             val meta = appliedMetadataMap[track.id]
             if (meta != null) {
+                val updatedArtUri = TaggedCoverStore.getCoverUri(application, track.id) ?: track.albumArtUri
                 track.copy(
                     title = meta.title,
                     artist = meta.artist,
                     album = meta.album,
                     albumArtist = meta.albumArtist.ifBlank { meta.artist },
+                    albumArtUri = updatedArtUri,
                     trackNumber = meta.trackNumber ?: track.trackNumber,
                     discNumber = meta.discNumber ?: track.discNumber,
                     genre = meta.genre ?: track.genre
@@ -387,6 +389,9 @@ class LibraryCoordinator(
                     onTrackPatched(track)
                 }
             }
+        }
+        withContext(Dispatchers.IO) {
+            libraryCacheRepository.saveCache(_audioSourceMode.value, _customFolders.value, patchedTracks, patchedAlbums)
         }
     }
 
@@ -433,6 +438,7 @@ class LibraryCoordinator(
             onDeletedIds?.invoke(deletedIds)
 
             scope.launch(Dispatchers.IO) {
+                TaggedCoverStore.removeTracksCovers(application, deletedIds)
                 libraryCacheRepository.saveCache(_audioSourceMode.value, _customFolders.value, remainingTracks, updatedAlbums)
             }
 

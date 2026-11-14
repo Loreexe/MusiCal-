@@ -167,7 +167,7 @@ fun AlbumGridItem(
                     .clip(RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                var isImageError by remember(album.id) { mutableStateOf(false) }
+                var isImageError by remember(album.id, album.albumArtUri) { mutableStateOf(false) }
                 val context = LocalContext.current
                 val imageRequest = remember(album.albumArtUri) {
                     album.albumArtUri?.let { uri ->

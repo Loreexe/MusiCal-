@@ -177,7 +177,7 @@ fun QueueBottomSheet(
                                         .clip(RoundedCornerShape(8.dp)),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    var isImageError by remember(currentTrack.id) { mutableStateOf(false) }
+                                    var isImageError by remember(currentTrack.id, currentTrack.albumArtUri) { mutableStateOf(false) }
 
                                     if (currentTrack.albumArtUri != null && !isImageError) {
                                         AsyncImage(
@@ -422,7 +422,7 @@ private fun ReorderableTrackList(
                                     .clip(RoundedCornerShape(8.dp)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                var isImageError by remember(track.id) { mutableStateOf(false) }
+                                var isImageError by remember(track.id, track.albumArtUri) { mutableStateOf(false) }
                                 val context = LocalContext.current
                                 val imageRequest = remember(track.albumArtUri) {
                                     track.albumArtUri?.let { uri ->

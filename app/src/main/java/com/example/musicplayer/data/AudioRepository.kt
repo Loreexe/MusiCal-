@@ -217,7 +217,8 @@ fun loadAudioFiles(
             }
 
             val contentUri = ContentUris.withAppendedId(collectionUri, id)
-            val albumArtUri = ContentUris.withAppendedId(albumArtBaseUri, albumId)
+            val defaultAlbumArtUri = ContentUris.withAppendedId(albumArtBaseUri, albumId)
+            val albumArtUri = TaggedCoverStore.getCoverUri(context, id) ?: defaultAlbumArtUri
 
             val rawTrack = if (trackColumn >= 0 && !cursor.isNull(trackColumn)) {
                 cursor.getInt(trackColumn)
@@ -554,7 +555,9 @@ fun groupTracksIntoAlbums(tracks: List<AudioTrack>): List<Album> {
             syntheticId
         }
 
-        val representativeArtUri = albumTracks.firstOrNull { it.albumArtUri != null }?.albumArtUri ?: first.albumArtUri
+        val representativeArtUri = albumTracks.firstOrNull { it.albumArtUri?.scheme == "file" }?.albumArtUri
+            ?: albumTracks.firstOrNull { it.albumArtUri != null }?.albumArtUri
+            ?: first.albumArtUri
 
         val sortedAlbumTracks = albumTracks.sortedWith(
             compareBy<AudioTrack> { it.discNumber }

@@ -216,7 +216,7 @@ fun AlbumDetailView(
                     .clip(RoundedCornerShape(10.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                var isImageError by remember(album.id) { mutableStateOf(false) }
+                var isImageError by remember(album.id, album.albumArtUri) { mutableStateOf(false) }
 
                 if (album.albumArtUri != null && !isImageError) {
                     val context = LocalContext.current

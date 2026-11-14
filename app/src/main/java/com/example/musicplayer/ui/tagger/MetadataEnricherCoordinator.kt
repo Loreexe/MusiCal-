@@ -7,6 +7,7 @@ import com.example.musicplayer.data.Album
 import com.example.musicplayer.data.AudioTrack
 import com.example.musicplayer.data.LyricsData
 import com.example.musicplayer.data.LyricsRepository
+import com.example.musicplayer.data.isGenericAlbum
 import com.example.musicplayer.data.isMixedOrGeneric
 import com.example.musicplayer.data.tagger.model.DeezerSearchTrack
 import com.example.musicplayer.data.tagger.model.EnrichedMetadata
@@ -370,17 +371,66 @@ class MetadataEnricherCoordinator(
                 }
             }
 
-            // 2. Mappa unificata (per raggruppare i brani sotto l'album ufficiale unico)
-            val candidateAlbumGroups = individualMap.values
-                .groupBy { it.album.trim().lowercase(java.util.Locale.ROOT) to it.albumArtist.trim().lowercase(java.util.Locale.ROOT) }
+            // 1.5 Se alcune tracce in individualMap condividono coverUrl ma una di esse ha fallito il download di coverBytes,
+            // riutilizza i byte già scaricati dalle tracce sorelle.
+            val downloadedByUrl = individualMap.values
+                .mapNotNull { meta ->
+                    val url = meta.coverUrl?.takeIf { it.isNotBlank() }
+                    val bytes = meta.coverBytes?.takeIf { it.isNotEmpty() }
+                    if (url != null && bytes != null) url to bytes else null
+                }
+                .toMap()
+            individualMap.entries.toList().forEach { (trackId, meta) ->
+                if ((meta.coverBytes == null || meta.coverBytes.isEmpty()) && !meta.coverUrl.isNullOrBlank()) {
+                    val sharedBytes = downloadedByUrl[meta.coverUrl]
+                    if (sharedBytes != null) {
+                        individualMap[trackId] = meta.copy(coverBytes = sharedBytes)
+                    }
+                }
+            }
+
+            // 2. Mappa unificata (per raggruppare i brani sotto l'album ufficiale unico senza corrompere tracce già valide)
+            val hasKnownLocalAlbum = !isGenericAlbum(album.title) && !album.title.contains("(Brani singoli)")
+            val nonGenericCandidates = individualMap.values.filter {
+                !isGenericAlbum(it.album) && !it.album.contains("(Brani singoli)")
+            }
+            val studioCandidates = nonGenericCandidates.filter {
+                !it.recordType.equals("single", ignoreCase = true)
+            }.ifEmpty { nonGenericCandidates }
+
+            val candidateAlbumGroups = studioCandidates
+                .groupBy {
+                    QuerySanitizer.normalizeAlbumTitle(it.album).trim().lowercase(java.util.Locale.ROOT) to
+                        QuerySanitizer.extractPrimaryArtistForSearch(it.albumArtist).lowercase(java.util.Locale.ROOT)
+                }
             val bestGroupKey = candidateAlbumGroups.maxByOrNull { it.value.size }?.key
-            val unifiedAlbumRef = candidateAlbumGroups[bestGroupKey]?.firstOrNull()
+            val bestGroupCandidates = candidateAlbumGroups[bestGroupKey].orEmpty()
+            val unifiedAlbumRef = bestGroupCandidates.firstOrNull { it.coverBytes != null && it.coverBytes.isNotEmpty() }
+                ?: bestGroupCandidates.firstOrNull { !it.coverUrl.isNullOrBlank() }
+                ?: bestGroupCandidates.firstOrNull()
+                ?: individualMap.values.firstOrNull { it.coverBytes != null && it.coverBytes.isNotEmpty() }
                 ?: individualMap[firstTrack.id]
                 ?: individualMap.values.first()
 
-            val albumSearchTitle = unifiedAlbumRef.album.ifBlank { album.title }
-            val albumSearchArtist = unifiedAlbumRef.albumArtist.ifBlank { album.artist }
-            val deezerAlbumId = enricherRepository.searchAlbumId(albumSearchTitle, albumSearchArtist).getOrNull()
+            // Cerca prima l'album usando il titolo/artista già noti dell'album locale (se non generico);
+            // altrimenti usa il candidato di consenso emerso dalle tracce.
+            val primarySearchId = if (hasKnownLocalAlbum) {
+                enricherRepository.searchAlbumId(album.title, album.artist).getOrNull()
+            } else null
+
+            val deezerAlbumId = primarySearchId ?: run {
+                val fallbackSearchTitle = unifiedAlbumRef.album.ifBlank { album.title }
+                val fallbackSearchArtist = unifiedAlbumRef.albumArtist.ifBlank { album.artist }
+                // Se l'album locale aveva già un titolo valido, accetta il fallback solo se coincide o c'è consenso maggioritario
+                val hasStrongConsensus = bestGroupCandidates.size >= 2 &&
+                    bestGroupCandidates.size >= (album.tracks.size + 1) / 2
+                if (!hasKnownLocalAlbum || hasStrongConsensus || QuerySanitizer.titlesMatch(album.title, fallbackSearchTitle)) {
+                    enricherRepository.searchAlbumId(fallbackSearchTitle, fallbackSearchArtist).getOrNull()
+                } else {
+                    null
+                }
+            }
+
             val officialAlbumDetail = if (deezerAlbumId != null && deezerAlbumId > 0L) {
                 enricherRepository.getAlbumDetail(deezerAlbumId).getOrNull()
             } else null
@@ -391,34 +441,121 @@ class MetadataEnricherCoordinator(
                 emptyMap()
             }
 
+            val hasMajorityConsensus = bestGroupCandidates.size >= 2 &&
+                bestGroupCandidates.size >= (album.tracks.size + 1) / 2
+
+            val resolvedUnifiedAlbumTitle = when {
+                !officialAlbumDetail?.title.isNullOrBlank() -> officialAlbumDetail!!.title
+                hasKnownLocalAlbum && !hasMajorityConsensus -> album.title.trim()
+                unifiedAlbumRef.album.isNotBlank() -> unifiedAlbumRef.album.trim()
+                else -> album.title.trim()
+            }
+
+            val resolvedUnifiedAlbumArtist = when {
+                !officialAlbumDetail?.albumArtist.isNullOrBlank() -> {
+                    val deezerAlbArt = officialAlbumDetail!!.albumArtist
+                    if (!QuerySanitizer.isArtistUnknownOrDirty(album.artist) &&
+                        QuerySanitizer.hasRicherArtistCredits(album.artist, deezerAlbArt)
+                    ) {
+                        album.artist.trim()
+                    } else {
+                        deezerAlbArt
+                    }
+                }
+                !QuerySanitizer.isArtistUnknownOrDirty(album.artist) && (!hasMajorityConsensus || QuerySanitizer.hasRicherArtistCredits(album.artist, unifiedAlbumRef.albumArtist)) ->
+                    album.artist.trim()
+                unifiedAlbumRef.albumArtist.isNotBlank() -> unifiedAlbumRef.albumArtist.trim()
+                else -> album.artist.trim()
+            }
+
+            val refMatchesUnifiedAlbum = QuerySanitizer.titlesMatch(
+                QuerySanitizer.normalizeAlbumTitle(unifiedAlbumRef.album),
+                QuerySanitizer.normalizeAlbumTitle(resolvedUnifiedAlbumTitle)
+            )
+
+            val finalCoverUrl = officialAlbumDetail?.coverXl?.takeIf { it.isNotBlank() }
+                ?: (if (refMatchesUnifiedAlbum) unifiedAlbumRef.coverUrl?.takeIf { it.isNotBlank() } else null)
+                ?: bestGroupCandidates.firstOrNull {
+                    QuerySanitizer.titlesMatch(
+                        QuerySanitizer.normalizeAlbumTitle(it.album),
+                        QuerySanitizer.normalizeAlbumTitle(resolvedUnifiedAlbumTitle)
+                    )
+                }?.coverUrl?.takeIf { it.isNotBlank() }
+                ?: (if (!hasKnownLocalAlbum) individualMap.values.firstNotNullOfOrNull { it.coverUrl?.takeIf { u -> u.isNotBlank() } } else null)
+
+            val finalCoverBytes = run {
+                val matchingFromTracks = if (!finalCoverUrl.isNullOrBlank()) {
+                    individualMap.values.firstOrNull {
+                        it.coverUrl == finalCoverUrl && it.coverBytes != null && it.coverBytes.isNotEmpty()
+                    }?.coverBytes
+                } else null
+
+                matchingFromTracks
+                    ?: (if (!finalCoverUrl.isNullOrBlank()) {
+                        enricherRepository.downloadImage(finalCoverUrl).getOrNull()?.takeIf { it.isNotEmpty() }
+                    } else null)
+                    ?: (if (refMatchesUnifiedAlbum) unifiedAlbumRef.coverBytes?.takeIf { it.isNotEmpty() } else null)
+                    ?: storageWriteManager.extractExistingAlbumCoverBytes(album)
+                    ?: bestGroupCandidates.firstNotNullOfOrNull { it.coverBytes?.takeIf { b -> b.isNotEmpty() } }
+                    ?: individualMap.values.firstNotNullOfOrNull { it.coverBytes?.takeIf { b -> b.isNotEmpty() } }
+            }
+            val finalReleaseYear = officialAlbumDetail?.releaseYear
+                ?: (if (refMatchesUnifiedAlbum) unifiedAlbumRef.releaseYear else null)
+            val finalGenre = officialAlbumDetail?.genre?.takeIf { it.isNotBlank() }
+                ?: (if (refMatchesUnifiedAlbum) unifiedAlbumRef.genre else null)
+                ?: album.tracks.firstNotNullOfOrNull { it.genre.takeIf { g -> g.isNotBlank() } }
+
             val unifiedMap = mutableMapOf<Long, EnrichedMetadata>()
             album.tracks.forEachIndexed { index, track ->
                 val ind = individualMap[track.id] ?: unifiedAlbumRef
                 val officialTrackInfo = matchedOfficialTracks[track.id]
 
+                // In Uniforma Album:
+                // - Preserva sempre il titolo locale se è già pulito e valido (non "Sconosciuto", non "Track 01", non nome file grezzo).
+                // - Preserva sempre l'artista locale del brano se è già valido (mantenendo così i feat. e collaboratori).
+                val isLocalTitleDirty = QuerySanitizer.isTitleUnknownOrDirty(track.title, track.displayName, track.artist)
+                val resolvedTitle = if (!isLocalTitleDirty) {
+                    track.title.trim()
+                } else {
+                    officialTrackInfo?.title?.takeIf { it.isNotBlank() }
+                        ?: ind.title.takeIf { it.isNotBlank() }
+                        ?: QuerySanitizer.cleanFileName(track.displayName).title.ifBlank { track.title.trim() }
+                }
+
+                val isLocalArtistDirty = QuerySanitizer.isArtistUnknownOrDirty(track.artist)
+                val resolvedArtist = if (!isLocalArtistDirty) {
+                    track.artist.trim()
+                } else {
+                    ind.artist.takeIf { !QuerySanitizer.isArtistUnknownOrDirty(it) }
+                        ?: resolvedUnifiedAlbumArtist.ifBlank { track.artist.trim() }
+                }
+
+                val indBelongsToUnifiedAlbum = !ind.recordType.equals("single", ignoreCase = true) &&
+                    QuerySanitizer.titlesMatch(
+                        QuerySanitizer.normalizeAlbumTitle(ind.album),
+                        QuerySanitizer.normalizeAlbumTitle(resolvedUnifiedAlbumTitle)
+                    )
+
                 val resolvedTrackNumber = officialTrackInfo?.trackPosition?.takeIf { it > 0 }
-                    ?: ind.trackNumber?.takeIf { it > 0 }
-                    ?: QuerySanitizer.extractTrackNumberFromFileName(track.displayName)
                     ?: track.trackNumber.takeIf { it > 0 }
+                    ?: QuerySanitizer.extractTrackNumberFromFileName(track.displayName)
+                    ?: (if (indBelongsToUnifiedAlbum) ind.trackNumber?.takeIf { it > 0 } else null)
                     ?: (index + 1)
 
                 val resolvedDiscNumber = officialTrackInfo?.diskNumber?.takeIf { it > 0 }
-                    ?: ind.discNumber?.takeIf { it > 0 }
                     ?: track.discNumber.takeIf { it > 0 }
+                    ?: (if (indBelongsToUnifiedAlbum) ind.discNumber?.takeIf { it > 0 } else null)
                     ?: 1
 
-                val finalCoverUrl = officialAlbumDetail?.coverXl ?: unifiedAlbumRef.coverUrl
-                val finalCoverBytes = unifiedAlbumRef.coverBytes
-                val finalReleaseYear = officialAlbumDetail?.releaseYear ?: unifiedAlbumRef.releaseYear
-                val finalGenre = officialAlbumDetail?.genre?.takeIf { it.isNotBlank() } ?: unifiedAlbumRef.genre
-
                 unifiedMap[track.id] = ind.copy(
-                    album = officialAlbumDetail?.title?.takeIf { it.isNotBlank() } ?: unifiedAlbumRef.album,
-                    albumArtist = officialAlbumDetail?.albumArtist?.takeIf { it.isNotBlank() } ?: unifiedAlbumRef.albumArtist,
+                    title = resolvedTitle,
+                    artist = resolvedArtist,
+                    album = resolvedUnifiedAlbumTitle,
+                    albumArtist = resolvedUnifiedAlbumArtist,
                     coverUrl = finalCoverUrl,
                     coverBytes = finalCoverBytes,
                     releaseYear = finalReleaseYear,
-                    genre = finalGenre,
+                    genre = finalGenre ?: ind.genre,
                     trackNumber = resolvedTrackNumber,
                     discNumber = resolvedDiscNumber
                 )
@@ -475,7 +612,11 @@ class MetadataEnricherCoordinator(
                 } else {
                     remainingTracks.add(track)
                     if (wasManuallyEdited && indMeta != null) {
-                        newUnified[track.id] = indMeta
+                        val baseUnified = newUnified[track.id] ?: current.unifiedTracksEnriched.values.firstOrNull()
+                        newUnified[track.id] = indMeta.copy(
+                            coverBytes = indMeta.coverBytes?.takeIf { it.isNotEmpty() } ?: baseUnified?.coverBytes,
+                            coverUrl = indMeta.coverUrl?.takeIf { it.isNotBlank() } ?: baseUnified?.coverUrl
+                        )
                     }
                 }
             }
@@ -498,14 +639,29 @@ class MetadataEnricherCoordinator(
     ) {
         _enricherState.value = EnricherUiState.Writing(1, 1, metadata.title)
         scope.launch {
-            val preparedFile = storageWriteManager.prepareTrackInCache(track, metadata, options)
+            val effectiveMeta = if (
+                options.embedCover &&
+                (metadata.coverBytes == null || metadata.coverBytes.isEmpty()) &&
+                !metadata.coverUrl.isNullOrBlank()
+            ) {
+                val downloaded = enricherRepository.downloadImage(metadata.coverUrl).getOrNull()
+                if (downloaded != null && downloaded.isNotEmpty()) {
+                    metadata.copy(coverBytes = downloaded)
+                } else {
+                    metadata
+                }
+            } else {
+                metadata
+            }
+
+            val preparedFile = storageWriteManager.prepareTrackInCache(track, effectiveMeta, options)
             if (preparedFile == null) {
                 _enricherState.value = EnricherUiState.Error("Impossibile elaborare i frame audio.")
                 return@launch
             }
 
             clearPendingWrites()
-            pendingWrites[track] = Pair(preparedFile, metadata)
+            pendingWrites[track] = Pair(preparedFile, effectiveMeta)
 
             val intentSender = storageWriteManager.createWriteRequestIntentSender(listOf(track.uri))
             if (intentSender != null) {
@@ -524,6 +680,8 @@ class MetadataEnricherCoordinator(
         trackCustomOptions: Map<Long, EnricherOptions>? = null
     ) {
         val currentAlbumState = _enricherState.value as? EnricherUiState.ReviewAlbum
+        val isSeparationMode = currentAlbumState?.isSeparationMode == true
+        val customAlbumCoverBytes = currentAlbumState?.customAlbumCoverBytes?.takeIf { it.isNotEmpty() }
         val effectiveMovedOut = movedOutTracks ?: currentAlbumState?.movedOutTracks.orEmpty()
         val effectiveCustomOptions = trackCustomOptions ?: currentAlbumState?.trackCustomOptions.orEmpty()
         val totalToProcess = album.tracks.size + effectiveMovedOut.size
@@ -532,10 +690,51 @@ class MetadataEnricherCoordinator(
         scope.launch {
             clearPendingWrites()
             val urisToAuthorize = mutableListOf<Uri>()
+            val downloadedCoverCache = mutableMapOf<String, ByteArray>()
+
+            suspend fun resolveCoverBytesForUrl(url: String?): ByteArray? {
+                val cleanUrl = url?.takeIf { it.isNotBlank() } ?: return null
+                downloadedCoverCache[cleanUrl]?.let { return it }
+                val fromSibling = tracksEnriched.values.firstOrNull {
+                    it.coverUrl == cleanUrl && it.coverBytes != null && it.coverBytes.isNotEmpty()
+                }?.coverBytes
+                if (fromSibling != null) {
+                    downloadedCoverCache[cleanUrl] = fromSibling
+                    return fromSibling
+                }
+                val downloaded = enricherRepository.downloadImage(cleanUrl).getOrNull()?.takeIf { it.isNotEmpty() }
+                if (downloaded != null) {
+                    downloadedCoverCache[cleanUrl] = downloaded
+                }
+                return downloaded
+            }
+
+            val sharedUnifiedCoverBytes: ByteArray? = if (!isSeparationMode) {
+                customAlbumCoverBytes
+                    ?: tracksEnriched.values.firstNotNullOfOrNull { it.coverBytes?.takeIf { b -> b.isNotEmpty() } }
+                    ?: resolveCoverBytesForUrl(
+                        tracksEnriched.values.firstNotNullOfOrNull { it.coverUrl?.takeIf { u -> u.isNotBlank() } }
+                    )
+                    ?: storageWriteManager.extractExistingAlbumCoverBytes(album)
+            } else {
+                null
+            }
 
             album.tracks.forEach { track ->
-                val meta = tracksEnriched[track.id] ?: return@forEach
+                val rawMeta = tracksEnriched[track.id] ?: return@forEach
                 val trackOpts = effectiveCustomOptions[track.id] ?: options
+                val resolvedBytes = if (trackOpts.embedCover) {
+                    rawMeta.coverBytes?.takeIf { it.isNotEmpty() }
+                        ?: resolveCoverBytesForUrl(rawMeta.coverUrl)
+                        ?: sharedUnifiedCoverBytes
+                } else {
+                    rawMeta.coverBytes
+                }
+                val meta = if (resolvedBytes != null && resolvedBytes !== rawMeta.coverBytes) {
+                    rawMeta.copy(coverBytes = resolvedBytes)
+                } else {
+                    rawMeta
+                }
                 val prepared = storageWriteManager.prepareTrackInCache(track, meta, trackOpts)
                 if (prepared != null) {
                     pendingWrites[track] = Pair(prepared, meta)
@@ -543,9 +742,20 @@ class MetadataEnricherCoordinator(
                 }
             }
 
-            effectiveMovedOut.values.forEach { (movedTrack, movedMeta) ->
+            effectiveMovedOut.values.forEach { (movedTrack, rawMovedMeta) ->
                 if (!pendingWrites.containsKey(movedTrack)) {
                     val trackOpts = effectiveCustomOptions[movedTrack.id] ?: options.copy(normalizeAlbum = false)
+                    val resolvedBytes = if (trackOpts.embedCover) {
+                        rawMovedMeta.coverBytes?.takeIf { it.isNotEmpty() }
+                            ?: resolveCoverBytesForUrl(rawMovedMeta.coverUrl)
+                    } else {
+                        rawMovedMeta.coverBytes
+                    }
+                    val movedMeta = if (resolvedBytes != null && resolvedBytes !== rawMovedMeta.coverBytes) {
+                        rawMovedMeta.copy(coverBytes = resolvedBytes)
+                    } else {
+                        rawMovedMeta
+                    }
                     val prepared = storageWriteManager.prepareTrackInCache(movedTrack, movedMeta, trackOpts)
                     if (prepared != null) {
                         pendingWrites[movedTrack] = Pair(prepared, movedMeta)

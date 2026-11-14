@@ -1042,7 +1042,11 @@ private fun ReviewAlbumContent(
     var customAlbumCoverBytes by remember(state.customAlbumCoverBytes) { mutableStateOf(state.customAlbumCoverBytes) }
     var currentTracksEnriched by remember(tracksEnriched) { mutableStateOf(tracksEnriched) }
 
-    val firstEnriched = remember(tracksEnriched) { tracksEnriched.values.firstOrNull() }
+    val firstEnriched = remember(currentTracksEnriched) {
+        currentTracksEnriched.values.firstOrNull {
+            (it.coverBytes != null && it.coverBytes.isNotEmpty()) || !it.coverUrl.isNullOrBlank()
+        } ?: currentTracksEnriched.values.firstOrNull()
+    }
 
     var isEditingAlbumDetails by remember { mutableStateOf(false) }
     var editedAlbumTitle by remember(state.editedAlbumTitle, firstEnriched?.album) {
@@ -1085,8 +1089,15 @@ private fun ReviewAlbumContent(
         }
     }
 
-    LaunchedEffect(tracksEnriched) {
-        currentTracksEnriched = tracksEnriched
+    LaunchedEffect(tracksEnriched, state.customAlbumCoverBytes) {
+        val customCover = customAlbumCoverBytes
+        currentTracksEnriched = if (customCover != null) {
+            tracksEnriched.mapValues { (_, meta) ->
+                meta.copy(coverBytes = customCover, coverUrl = null)
+            }
+        } else {
+            tracksEnriched
+        }
     }
 
     val albumCoverPickerLauncher = rememberLauncherForActivityResult(
@@ -1553,7 +1564,36 @@ private fun ReviewAlbumContent(
             }
             Spacer(modifier = Modifier.width(10.dp))
             Button(
-                onClick = { onApply(currentTracksEnriched, options) },
+                onClick = {
+                    val sharedCoverBytes = customAlbumCoverBytes?.takeIf { it.isNotEmpty() }
+                        ?: currentTracksEnriched.values.firstNotNullOfOrNull { it.coverBytes?.takeIf { b -> b.isNotEmpty() } }
+                    val sharedCoverUrl = if (customAlbumCoverBytes != null) {
+                        null
+                    } else {
+                        currentTracksEnriched.values.firstNotNullOfOrNull { it.coverUrl?.takeIf { u -> u.isNotBlank() } }
+                    }
+                    val yr = editedAlbumYear.trim().toIntOrNull()
+                    val gn = editedAlbumGenre.trim().takeIf { it.isNotBlank() }
+                    val finalMap = currentTracksEnriched.mapValues { (_, meta) ->
+                        if (!isSeparationMode) {
+                            meta.copy(
+                                album = editedAlbumTitle.trim().ifBlank { meta.album },
+                                albumArtist = editedAlbumArtist.trim().ifBlank { meta.albumArtist },
+                                releaseYear = yr ?: meta.releaseYear,
+                                genre = gn ?: meta.genre,
+                                coverBytes = customAlbumCoverBytes?.takeIf { it.isNotEmpty() }
+                                    ?: meta.coverBytes?.takeIf { it.isNotEmpty() }
+                                    ?: sharedCoverBytes,
+                                coverUrl = if (customAlbumCoverBytes != null) null else (meta.coverUrl?.takeIf { it.isNotBlank() } ?: sharedCoverUrl)
+                            )
+                        } else if (customAlbumCoverBytes != null && customAlbumCoverBytes!!.isNotEmpty()) {
+                            meta.copy(coverBytes = customAlbumCoverBytes, coverUrl = null)
+                        } else {
+                            meta
+                        }
+                    }
+                    onApply(finalMap, options)
+                },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary
                 )

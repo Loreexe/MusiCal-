@@ -570,7 +570,7 @@ fun FullScreenPlayerSheet(
                             .clip(RoundedCornerShape(24.dp)),
                         contentAlignment = Alignment.Center
                     ) {
-                        var isImageError by remember(trackForPage?.id) { mutableStateOf(false) }
+                        var isImageError by remember(trackForPage?.id, trackForPage?.albumArtUri) { mutableStateOf(false) }
 
                         if (coverImageRequest != null && !isImageError) {
                             AsyncImage(

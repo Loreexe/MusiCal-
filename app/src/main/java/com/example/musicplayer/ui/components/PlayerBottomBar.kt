@@ -366,7 +366,7 @@ private fun PlayerTrackInfoRow(
                     .clip(RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                var isImageError by remember(track?.id) { mutableStateOf(false) }
+                var isImageError by remember(track?.id, track?.albumArtUri) { mutableStateOf(false) }
 
                 if (imageRequest != null && !isImageError) {
                     AsyncImage(

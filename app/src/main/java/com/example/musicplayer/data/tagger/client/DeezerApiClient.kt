@@ -5,6 +5,7 @@ import com.example.musicplayer.data.tagger.model.DeezerAlbumDetail
 import com.example.musicplayer.data.tagger.model.DeezerAlbumTrackInfo
 import com.example.musicplayer.data.tagger.model.DeezerSearchTrack
 import com.example.musicplayer.data.tagger.model.DeezerTrackDetail
+import com.example.musicplayer.data.tagger.sanitizer.QuerySanitizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -26,22 +27,35 @@ class DeezerApiClient(
 
     /**
      * Cerca una traccia su Deezer per titolo e artista.
-     * Esegue prima una query avanzata e, se vuota, un fallback su ricerca libera.
+     * Esegue prima una query avanzata strutturata, poi con l'artista principale (senza feat.) e infine un fallback su ricerca libera.
      */
     suspend fun searchTrack(title: String, artist: String): Result<List<DeezerSearchTrack>> =
         withContext(Dispatchers.IO) {
             try {
-                // Tentativo 1: query avanzata strutturata
+                val coreTitle = QuerySanitizer.stripFeaturingAndEdition(title).ifBlank { title.trim() }
+                val primaryArtist = QuerySanitizer.extractPrimaryArtistForSearch(artist)
+
+                // Tentativo 1: query avanzata strutturata con artista completo
                 val advancedQuery = buildString {
-                    if (title.isNotBlank()) append("track:\"$title\" ")
+                    if (coreTitle.isNotBlank()) append("track:\"$coreTitle\" ")
                     if (artist.isNotBlank()) append("artist:\"$artist\"")
                 }.trim()
 
-                var results = executeSearch(advancedQuery)
+                var results = if (advancedQuery.isNotBlank()) executeSearch(advancedQuery) else emptyList()
 
-                // Tentativo 2 (fallback): ricerca testuale libera se la query avanzata non ha trovato nulla
-                if (results.isEmpty() && (title.isNotBlank() || artist.isNotBlank())) {
-                    val broadQuery = "$artist $title".trim()
+                // Tentativo 2: se l'artista conteneva feat./collaboratori, riprova con l'artista principale
+                if (results.isEmpty() && primaryArtist.isNotBlank() && !primaryArtist.equals(artist.trim(), ignoreCase = true)) {
+                    val primaryQuery = buildString {
+                        if (coreTitle.isNotBlank()) append("track:\"$coreTitle\" ")
+                        append("artist:\"$primaryArtist\"")
+                    }.trim()
+                    results = executeSearch(primaryQuery)
+                }
+
+                // Tentativo 3 (fallback): ricerca testuale libera se la query avanzata non ha trovato nulla
+                if (results.isEmpty() && (coreTitle.isNotBlank() || artist.isNotBlank())) {
+                    val searchArtist = primaryArtist.ifBlank { artist.trim() }
+                    val broadQuery = "$searchArtist $coreTitle".trim()
                     results = executeSearch(broadQuery)
                 }
 
@@ -52,22 +66,25 @@ class DeezerApiClient(
         }
 
     /**
-     * Cerca un album su Deezer tramite titolo e artista e ne restituisce l'id Deezer.
+     * Cerca un album su Deezer tramite titolo e artista e ne restituisce l'id Deezer
+     * solo se il titolo e l'artista dell'album trovato corrispondono effettivamente a quelli cercati.
      */
     suspend fun searchAlbumId(title: String, artist: String): Result<Long?> = withContext(Dispatchers.IO) {
         try {
+            val cleanAlbumTitle = QuerySanitizer.normalizeAlbumTitle(title).ifBlank { title.trim() }
+            if (cleanAlbumTitle.isBlank()) return@withContext Result.success(null)
+
+            val primaryArtist = QuerySanitizer.extractPrimaryArtistForSearch(artist)
             val query = buildString {
-                if (title.isNotBlank()) append(title)
-                if (artist.isNotBlank()) {
-                    if (isNotEmpty()) append(" ")
-                    append(artist)
+                append(cleanAlbumTitle)
+                if (primaryArtist.isNotBlank()) {
+                    append(" ")
+                    append(primaryArtist)
                 }
             }.trim()
 
-            if (query.isBlank()) return@withContext Result.success(null)
-
             val encoded = URLEncoder.encode(query, "UTF-8")
-            val url = "$baseUrl/search/album?q=$encoded&limit=5"
+            val url = "$baseUrl/search/album?q=$encoded&limit=10"
             val request = Request.Builder()
                 .url(url)
                 .header("User-Agent", userAgent)
@@ -84,19 +101,36 @@ class DeezerApiClient(
                 val data = json.getJSONArray("data")
                 if (data.length() == 0) return@withContext Result.success(null)
 
-                // Cerca preferibilmente un album completo o il primo risultato
-                var bestId: Long? = null
+                val isArtistGenericOrVa = QuerySanitizer.isArtistUnknownOrDirty(artist) ||
+                    artist.trim().lowercase(java.util.Locale.ROOT) in setOf("artisti vari", "various artists", "various", "va")
+
+                var bestFallbackValidatedId: Long? = null
                 for (i in 0 until data.length()) {
                     val item = data.getJSONObject(i)
-                    val recType = item.optString("record_type", "")
                     val id = item.getLong("id")
-                    if (bestId == null) bestId = id
-                    if (recType.equals("album", ignoreCase = true)) {
-                        bestId = id
-                        break
+                    val itemTitle = item.optString("title", "")
+                    val recType = item.optString("record_type", "")
+                    val itemArtist = item.optJSONObject("artist")?.optString("name", "").orEmpty()
+
+                    val titleMatches = QuerySanitizer.titlesMatch(
+                        cleanAlbumTitle,
+                        QuerySanitizer.normalizeAlbumTitle(itemTitle).ifBlank { itemTitle }
+                    )
+                    val itemArtistIsVa = itemArtist.trim().lowercase(java.util.Locale.ROOT) in setOf("artisti vari", "various artists", "various")
+                    val artistMatches = isArtistGenericOrVa ||
+                        itemArtistIsVa ||
+                        QuerySanitizer.artistsMatch(artist, itemArtist)
+
+                    if (titleMatches && artistMatches) {
+                        if (recType.equals("album", ignoreCase = true)) {
+                            return@withContext Result.success(id)
+                        }
+                        if (bestFallbackValidatedId == null) {
+                            bestFallbackValidatedId = id
+                        }
                     }
                 }
-                Result.success(bestId)
+                Result.success(bestFallbackValidatedId)
             }
         } catch (e: Exception) {
             Result.failure(e)
