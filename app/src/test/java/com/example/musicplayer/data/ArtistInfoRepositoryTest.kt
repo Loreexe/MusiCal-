@@ -1,6 +1,15 @@
 package com.example.musicplayer.data
 
+import android.content.Context
 import android.net.Uri
+import com.example.musicplayer.data.lastfm.LastFmConfig
+import kotlinx.coroutines.runBlocking
+import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -8,10 +17,17 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import org.mockito.Mockito
+import java.net.URLDecoder
 
 class ArtistInfoRepositoryTest {
+
+    @Rule
+    @JvmField
+    val tempFolder = TemporaryFolder()
 
     private val dummyUri: Uri = Mockito.mock(Uri::class.java)
 
@@ -446,5 +462,185 @@ class ArtistInfoRepositoryTest {
         assertTrue(collabTrack.matchesArtist("Drake & 21 Savage"))
         assertFalse(soloTrack.matchesArtist("Drake & 21 Savage"))
         assertFalse(featTrack.matchesArtist("Drake & 21 Savage"))
+    }
+
+    @Test
+    fun testCountCatalogMentionsInTextAndBoundaryProtection() {
+        val text = "Nicola Pittalis, in arte Pitta, è un rapper italiano noto per l'album Sardegna e il singolo Fino all'alba."
+        val stats = countCatalogMentionsInText(
+            text = text,
+            trackRefs = listOf("Fino all'alba", "Io", "In"),
+            albumRefs = listOf("Sardegna")
+        )
+        assertEquals(1, stats.trackMatches)
+        assertEquals(1, stats.albumMatches)
+        assertEquals(2, stats.total)
+
+        // Parole corte (< 3 char), termini generici musicali o sottostringhe dentro altre parole non devono produrre falsi positivi
+        val falseStats = countCatalogMentionsInText(
+            text = "Artista famoso per la musica elettronica e sognando nuovi traguardi.",
+            trackRefs = listOf("Musica", "Arte", "Io", "Sogna"),
+            albumRefs = emptyList()
+        )
+        assertEquals(0, falseStats.trackMatches)
+    }
+
+    @Test
+    fun testDisambiguateMultiArtistBioSelectsCorrectSection() {
+        val multiBio = """
+            There are multiple artists with this name:
+
+            1) Pitta is an indie rock band formed in Tokyo in 2004, known for the album Neon Streets.
+
+            2) Pitta (Nicola Pittalis) is an Italian rapper known for tracks like Fino all'alba and Sardegna.
+        """.trimIndent()
+
+        val result = disambiguateMultiArtistBio(
+            bio = multiBio,
+            trackRefs = listOf("Fino all'alba"),
+            albumRefs = listOf("Sardegna")
+        )
+        assertEquals(MultiArtistBioStatus.SELECTED_SECTION, result.status)
+        assertNotNull(result.selectedBio)
+        assertTrue(result.selectedBio!!.contains("Italian rapper"))
+        assertFalse(result.selectedBio!!.contains("Tokyo"))
+
+        val ambiguousResult = disambiguateMultiArtistBio(
+            bio = multiBio,
+            trackRefs = listOf("Canzone Inesistente"),
+            albumRefs = emptyList()
+        )
+        assertEquals(MultiArtistBioStatus.AMBIGUOUS_NO_MATCH, ambiguousResult.status)
+    }
+
+    @Test
+    fun testEndToEndHomonymyResolutionUsesTrackReferencesAcrossDeezerAndWikipedia() = runBlocking {
+        val mockContext = Mockito.mock(Context::class.java)
+        Mockito.`when`(mockContext.filesDir).thenReturn(tempFolder.root)
+
+        val mockClient = OkHttpClient.Builder()
+            .addInterceptor(Interceptor { chain ->
+                val url = chain.request().url
+                val host = url.host
+                val path = url.encodedPath
+                val query = URLDecoder.decode(url.queryParameter("q").orEmpty(), "UTF-8")
+                val srsearch = URLDecoder.decode(url.queryParameter("srsearch").orEmpty(), "UTF-8")
+                val titles = URLDecoder.decode(url.queryParameter("titles").orEmpty(), "UTF-8")
+
+                val bodyJson = when {
+                    // Deezer: ricerca per brano identifica l'ID esatto 2002 (non l'omonimo 1001)
+                    host == "api.deezer.com" && path == "/search" && query.contains("Sognando", ignoreCase = true) -> {
+                        """
+                        {
+                          "data": [
+                            {
+                              "id": 9001,
+                              "title": "Sognando",
+                              "title_short": "Sognando",
+                              "artist": {
+                                "id": 2002,
+                                "name": "Pitta",
+                                "picture_xl": "https://cdn.deezer.com/artist/2002/real_pitta_xl.jpg"
+                              },
+                              "album": { "id": 500, "title": "Sardegna" }
+                            }
+                          ]
+                        }
+                        """.trimIndent()
+                    }
+                    host == "api.deezer.com" && path == "/artist/2002/top" -> {
+                        """{"data": [{"title": "Sognando", "title_short": "Sognando"}]}"""
+                    }
+                    host == "api.deezer.com" && path == "/artist/2002/albums" -> {
+                        """{"data": [{"title": "Sardegna"}]}"""
+                    }
+                    // Last.fm: restituisce una bio di un omonimo sbagliato e top tracks completamente diverse
+                    host.contains("last.fm") && url.queryParameter("method") == "artist.getinfo" -> {
+                        """
+                        {
+                          "artist": {
+                            "name": "Pitta",
+                            "bio": {
+                              "content": "Pitta is an American jazz quartet formed in 1982 in Chicago, famous for the album Blue Brass."
+                            }
+                          }
+                        }
+                        """.trimIndent()
+                    }
+                    host.contains("last.fm") && url.queryParameter("method") == "artist.gettoptracks" -> {
+                        """
+                        {
+                          "toptracks": {
+                            "track": [
+                              {"name": "Chicago Midnight"},
+                              {"name": "Blue Brass"}
+                            ]
+                          }
+                        }
+                        """.trimIndent()
+                    }
+                    // Wikipedia IT: MediaWiki search con artista + brano trova la pagina reale (es. sotto nome anagrafico)
+                    host == "it.wikipedia.org" && path == "/w/api.php" && url.queryParameter("list") == "search" -> {
+                        if (srsearch.contains("Sognando")) {
+                            """{"query": {"search": [{"title": "Nicola Pittalis"}]}}"""
+                        } else {
+                            """{"query": {"search": [{"title": "Pitta (cantante americano)"}, {"title": "Nicola Pittalis"}]}}"""
+                        }
+                    }
+                    // Wikipedia IT batch query: confronta l'omonimo americano vs il profilo reale che cita il brano Sognando
+                    host == "it.wikipedia.org" && path == "/w/api.php" && url.queryParameter("prop")?.contains("extracts") == true -> {
+                        """
+                        {
+                          "query": {
+                            "pages": {
+                              "101": {
+                                "pageid": 101,
+                                "title": "Pitta (cantante americano)",
+                                "description": "cantante statunitense",
+                                "extract": "Pitta è un cantante statunitense di musica jazz attivo negli anni ottanta. Ha inciso diversi dischi di successo internazionale tra cui Blue Brass e Chicago Nights presso la storica etichetta americana. La sua carriera si è svolta interamente negli Stati Uniti con numerosi concerti dal vivo e tournée jazz internazionali, collaborando con importanti strumentisti della scena di Chicago e pubblicando oltre dieci album in studio."
+                              },
+                              "102": {
+                                "pageid": 102,
+                                "title": "Nicola Pittalis",
+                                "description": "rapper italiano",
+                                "extract": "Nicola Pittalis, noto con lo pseudonimo Pitta, è un rapper italiano.\n\n== Carriera ==\nNel corso della sua carriera ha pubblicato l'album Sardegna contenente il celebre brano Sognando."
+                              }
+                            }
+                          }
+                        }
+                        """.trimIndent()
+                    }
+                    else -> """{}"""
+                }
+
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(bodyJson.toResponseBody("application/json".toMediaType()))
+                    .build()
+            })
+            .build()
+
+        val repo = ArtistInfoRepository(context = mockContext, client = mockClient)
+        LastFmConfig.setCustomCredentials("test_api_key", "test_secret")
+        try {
+            val info = repo.getArtistInfo(
+                artistName = "Pitta",
+                forceRefresh = true,
+                referenceTrackTitles = listOf("Sognando"),
+                referenceAlbumTitles = listOf("Sardegna")
+            )
+
+            assertEquals("https://cdn.deezer.com/artist/2002/real_pitta_xl.jpg", info.photoUrl)
+            assertEquals("Wikipedia", info.source)
+            assertNotNull(info.biography)
+            assertTrue(info.biography!!.contains("Nicola Pittalis"))
+            assertFalse(info.biography!!.contains("Chicago"))
+            assertEquals(ArtistInfoRepository.CURRENT_DISAMBIGUATION_VERSION, info.disambiguationVersion)
+        } finally {
+            LastFmConfig.setCustomCredentials(null, null)
+        }
     }
 }

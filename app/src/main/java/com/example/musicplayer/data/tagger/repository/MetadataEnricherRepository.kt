@@ -54,11 +54,12 @@ class MetadataEnricherRepository(
                 }
             }
 
-            val deezerSearchRes = deezerDeferred.await().getOrNull().orEmpty()
-            val lrclibRes = lrclibDeferred.await()
+            val deezerSearchResInitial = deezerDeferred.await().getOrNull().orEmpty()
+            var deezerSearchRes = deezerSearchResInitial
+            var lrclibRes = lrclibDeferred.await()
 
             // 2. Selezione rigorosa del miglior candidato Deezer (deve corrispondere per titolo, artista e durata compatibile)
-            val bestCandidate = selectBestCandidate(
+            var bestCandidate = selectBestCandidate(
                 track = track,
                 candidates = deezerSearchRes,
                 cleanTitle = cleanTitle,
@@ -66,20 +67,91 @@ class MetadataEnricherRepository(
                 options = options
             )
 
+            // 2.5 Fallback automatico se il titolo è in formato "Nome Artista - Canzone" (o inverso)
+            // ma non era stato riconosciuto a priori (es. tag artista sporco/canale diverso dal prefisso)
+            if (bestCandidate == null) {
+                val fallbackQueries = buildList {
+                    QuerySanitizer.extractFallbackArtistAndTitle(track.title)?.let { (parsedArtist, parsedTitle) ->
+                        add(parsedArtist to parsedTitle)
+                        if (cleanArtist.isNotBlank() && !QuerySanitizer.artistsMatch(cleanArtist, parsedArtist)) {
+                            add(cleanArtist to parsedTitle)
+                        }
+                    }
+                    QuerySanitizer.extractReversedTitleAndArtist(track.title)?.let { (revArtist, revTitle) ->
+                        add(revArtist to revTitle)
+                        if (cleanArtist.isNotBlank() && !QuerySanitizer.artistsMatch(cleanArtist, revArtist)) {
+                            add(cleanArtist to revTitle)
+                        }
+                    }
+                    if (track.displayName.isNotBlank()) {
+                        val fn = QuerySanitizer.cleanFileName(track.displayName)
+                        if (!fn.artist.isNullOrBlank() && fn.title.isNotBlank()) {
+                            val fnTitle = QuerySanitizer.stripFeaturingAndEdition(fn.title).ifBlank { fn.title }
+                            val fnArtist = QuerySanitizer.cleanArtistString(fn.artist).ifBlank { fn.artist }
+                            add(fnArtist to fnTitle)
+                        }
+                    }
+                }.distinctBy { (a, t) ->
+                    a.lowercase(java.util.Locale.ROOT) to t.lowercase(java.util.Locale.ROOT)
+                }.filterNot { (a, t) ->
+                    a.equals(cleanArtist, ignoreCase = true) && t.equals(cleanTitle, ignoreCase = true)
+                }
+
+                val accumulatedCandidates = deezerSearchRes.toMutableList()
+                for ((fbArtist, fbTitle) in fallbackQueries) {
+                    val fbResults = deezerClient.searchTrack(fbTitle, fbArtist).getOrNull().orEmpty()
+                    if (fbResults.isNotEmpty()) {
+                        accumulatedCandidates.addAll(fbResults)
+                    }
+                    val fbBest = selectBestCandidate(
+                        track = track,
+                        candidates = fbResults.ifEmpty { accumulatedCandidates },
+                        cleanTitle = fbTitle,
+                        cleanArtist = fbArtist,
+                        options = options
+                    )
+                    if (fbBest != null) {
+                        bestCandidate = fbBest
+                        deezerSearchRes = accumulatedCandidates.distinctBy { it.id }
+                        if (options.includeLyrics && lrclibRes == null) {
+                            val durationSec = if (track.duration > 0) track.duration / 1000 else null
+                            lrclibRes = lrclibClient.getLyrics(
+                                fbBest.titleShort.ifBlank { fbBest.title },
+                                fbBest.artistName,
+                                fbBest.albumTitle,
+                                durationSec
+                            ).getOrNull()
+                        }
+                        break
+                    }
+                }
+                if (bestCandidate == null && accumulatedCandidates.size > deezerSearchRes.size) {
+                    deezerSearchRes = accumulatedCandidates.distinctBy { it.id }
+                }
+            }
+
             if (bestCandidate == null) {
                 // Se nessun candidato Deezer corrisponde in modo affidabile al brano, preserviamo i dati validi della traccia locale
                 // evitando di sovrascrivere brani corretti con canzoni sbagliate.
-                val isTitleDirty = QuerySanitizer.isTitleUnknownOrDirty(track.title, track.displayName, track.artist)
+                val isTitleDirty = QuerySanitizer.isTitleUnknownOrDirty(
+                    track.title,
+                    track.displayName,
+                    track.artist,
+                    track.albumArtist
+                )
                 val isArtistDirty = QuerySanitizer.isArtistUnknownOrDirty(track.artist)
-                val preservedTitle = if (!isTitleDirty) {
-                    track.title.trim()
-                } else {
-                    cleanTitle.ifBlank { track.title.trim() }
+                val fallbackSplit = QuerySanitizer.extractFallbackArtistAndTitle(track.title)
+                val preservedTitle = when {
+                    !isTitleDirty -> track.title.trim()
+                    cleanTitle.isNotBlank() -> cleanTitle
+                    fallbackSplit != null -> fallbackSplit.second
+                    else -> track.title.trim()
                 }
-                val preservedArtist = if (!isArtistDirty) {
-                    track.artist.trim()
-                } else {
-                    cleanArtist.ifBlank { track.artist.trim() }
+                val preservedArtist = when {
+                    !isArtistDirty -> QuerySanitizer.cleanArtistString(track.artist).ifBlank { track.artist.trim() }
+                    cleanArtist.isNotBlank() -> cleanArtist
+                    fallbackSplit != null -> fallbackSplit.first
+                    else -> track.artist.trim()
                 }
                 val preservedAlbumArtist = track.albumArtist.trim().takeIf { !QuerySanitizer.isArtistUnknownOrDirty(it) }
                     ?: preservedArtist
@@ -168,12 +240,40 @@ class MetadataEnricherRepository(
 
     /**
      * Esegue una ricerca manuale su Deezer con termini personalizzati dall'utente.
+     * Se il titolo inserito contiene ancora "Nome Artista - Canzone" e la query letterale non restituisce risultati,
+     * esegue automaticamente un fallback separando artista e titolo.
      */
     suspend fun searchCustom(
         title: String,
         artist: String
     ): Result<List<DeezerSearchTrack>> = withContext(Dispatchers.IO) {
-        deezerClient.searchTrack(title.trim(), artist.trim())
+        val trimmedTitle = title.trim()
+        val trimmedArtist = artist.trim()
+        val primaryRes = deezerClient.searchTrack(trimmedTitle, trimmedArtist)
+        val primaryList = primaryRes.getOrNull().orEmpty()
+        if (primaryList.isNotEmpty()) {
+            return@withContext primaryRes
+        }
+
+        val fallbackPair = QuerySanitizer.extractFallbackArtistAndTitle(trimmedTitle)
+        if (fallbackPair != null) {
+            val (parsedArtist, parsedTitle) = fallbackPair
+            val effectiveArtist = trimmedArtist.takeIf {
+                it.isNotBlank() && !QuerySanitizer.isArtistUnknownOrDirty(it)
+            } ?: parsedArtist
+            val fallbackRes = deezerClient.searchTrack(parsedTitle, effectiveArtist)
+            if (fallbackRes.getOrNull().orEmpty().isNotEmpty()) {
+                return@withContext fallbackRes
+            }
+            if (!effectiveArtist.equals(parsedArtist, ignoreCase = true)) {
+                val parsedArtistRes = deezerClient.searchTrack(parsedTitle, parsedArtist)
+                if (parsedArtistRes.getOrNull().orEmpty().isNotEmpty()) {
+                    return@withContext parsedArtistRes
+                }
+            }
+        }
+
+        primaryRes
     }
 
     /**
@@ -208,10 +308,12 @@ class MetadataEnricherRepository(
         // Passata 1: corrispondenza per titolo esatto o sanitizzato
         for (local in localTracks) {
             val cleanedFileTitle = QuerySanitizer.cleanFileName(local.displayName).title
+            val cleanedTagTitle = QuerySanitizer.extractFallbackArtistAndTitle(local.title)?.second
+            val isTitleDirty = QuerySanitizer.isTitleUnknownOrDirty(local.title, local.displayName, local.artist, local.albumArtist)
             val candidate = remainingOfficial.firstOrNull { off ->
                 QuerySanitizer.titlesMatch(local.title, off.title) ||
-                    (QuerySanitizer.isTitleUnknownOrDirty(local.title, local.displayName, local.artist) &&
-                        QuerySanitizer.titlesMatch(cleanedFileTitle, off.title))
+                    (cleanedTagTitle != null && QuerySanitizer.titlesMatch(cleanedTagTitle, off.title)) ||
+                    (isTitleDirty && QuerySanitizer.titlesMatch(cleanedFileTitle, off.title))
             }
             if (candidate != null) {
                 matchedMap[local.id] = candidate
@@ -222,7 +324,7 @@ class MetadataEnricherRepository(
         // Passata 2: per le tracce rimaste con titolo ignoto/generico, verifica se il numero traccia corrisponde alla posizione
         for (local in localTracks) {
             if (local.id in matchedMap) continue
-            val isTitleDirty = QuerySanitizer.isTitleUnknownOrDirty(local.title, local.displayName, local.artist)
+            val isTitleDirty = QuerySanitizer.isTitleUnknownOrDirty(local.title, local.displayName, local.artist, local.albumArtist)
             if (!isTitleDirty) continue
 
             val inferredNum = QuerySanitizer.extractTrackNumberFromFileName(local.displayName)
@@ -326,7 +428,7 @@ class MetadataEnricherRepository(
         val candidateCleanTitle = candidate.titleShort.ifBlank { candidate.title }
         val resolvedTitle = if (
             !isExplicitSelection &&
-            !QuerySanitizer.isTitleUnknownOrDirty(track.title, track.displayName, track.artist) &&
+            !QuerySanitizer.isTitleUnknownOrDirty(track.title, track.displayName, track.artist, track.albumArtist) &&
             QuerySanitizer.titlesMatch(track.title, candidateCleanTitle)
         ) {
             track.title.trim()
@@ -371,7 +473,7 @@ class MetadataEnricherRepository(
         if (candidates.isEmpty()) return null
 
         val actualSec = if (track.duration > 0) track.duration / 1000 else null
-        val isLocalTitleClean = !QuerySanitizer.isTitleUnknownOrDirty(track.title, track.displayName, track.artist)
+        val isLocalTitleClean = !QuerySanitizer.isTitleUnknownOrDirty(track.title, track.displayName, track.artist, track.albumArtist)
         val isLocalArtistUnknown = QuerySanitizer.isArtistUnknownOrDirty(track.artist) && cleanArtist.isBlank()
         val hasKnownLocalAlbum = !isGenericAlbum(track.album) && !track.album.contains("(Brani singoli)")
         val normalizedLocalAlbum = if (hasKnownLocalAlbum) QuerySanitizer.normalizeAlbumTitle(track.album) else ""

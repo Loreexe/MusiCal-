@@ -225,4 +225,29 @@ class SortOptionTest {
         assertEquals("Più ascoltati", SortOption.MOST_PLAYED.getLabel(isAscending = false))
         assertEquals("Aggiunti di recente", SortOption.RECENTLY_ADDED.getLabel(isAscending = false))
     }
+
+    @Test
+    fun testAlphabeticalSortingNormalizesPunctuationAndAccents() {
+        val tracks = listOf(
+            track(1, "\"Heroes\""),
+            track(2, "(Jump)"),
+            track(3, "Édith"),
+            track(4, "Apple"),
+            track(5, "21 Guns"),
+            track(6, "!!! Boom"),
+            track(7, "Zebra")
+        )
+
+        val ascTitles = tracks.sortTracks(SortOption.ALPHABETICAL, isAscending = true).map { it.title }
+        assertEquals(
+            listOf("!!! Boom", "21 Guns", "Apple", "Édith", "\"Heroes\"", "(Jump)", "Zebra"),
+            ascTitles
+        )
+
+        val descTitles = tracks.sortTracks(SortOption.ALPHABETICAL, isAscending = false).map { it.title }
+        assertEquals(
+            listOf("Zebra", "(Jump)", "\"Heroes\"", "Édith", "Apple", "21 Guns", "!!! Boom"),
+            descTitles
+        )
+    }
 }

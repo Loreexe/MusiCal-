@@ -222,10 +222,24 @@ fun ArtistDetailSheet(
         }
     }
 
-    // Informazioni profilo artista (foto HD Deezer e biografia Wikipedia/Last.fm)
-    val artistInfoFlow = remember(displayArtistName, artistInfoRepository) {
+    // Titoli brani e album di riferimento per disambiguare eventuali artisti omonimi
+    val referenceTrackTitles = remember(artistTracks) {
+        artistTracks.map { it.title }.filter { it.isNotBlank() }.distinct()
+    }
+    val referenceAlbumTitles = remember(artistAlbums, artistTracks) {
+        (artistAlbums.map { it.title } + artistTracks.map { it.album })
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    // Informazioni profilo artista (foto HD Deezer e biografia Wikipedia/Last.fm disambiguate)
+    val artistInfoFlow = remember(displayArtistName, artistInfoRepository, referenceTrackTitles, referenceAlbumTitles) {
         if (displayArtistName.isNotBlank() && artistInfoRepository != null) {
-            artistInfoRepository.getArtistInfoFlow(displayArtistName)
+            artistInfoRepository.getArtistInfoFlow(
+                artistName = displayArtistName,
+                referenceTrackTitles = referenceTrackTitles,
+                referenceAlbumTitles = referenceAlbumTitles
+            )
         } else null
     }
     val artistInfo by (artistInfoFlow?.collectAsStateWithLifecycle(initialValue = null)
@@ -698,7 +712,11 @@ fun ArtistDetailSheet(
             onSavePhoto = { photoUri, albumArtUri, resetPhoto ->
                 coroutineScope.launch {
                     when {
-                        resetPhoto -> artistInfoRepository?.resetCustomArtistPhoto(displayArtistName)
+                        resetPhoto -> artistInfoRepository?.resetCustomArtistPhoto(
+                            artistName = displayArtistName,
+                            referenceTrackTitles = referenceTrackTitles,
+                            referenceAlbumTitles = referenceAlbumTitles
+                        )
                         photoUri != null -> artistInfoRepository?.setCustomArtistPhoto(displayArtistName, photoUri)
                         albumArtUri != null -> artistInfoRepository?.setCustomArtistAlbumCover(displayArtistName, albumArtUri)
                     }
@@ -707,7 +725,11 @@ fun ArtistDetailSheet(
             onSaveBio = { newBio, resetBio ->
                 coroutineScope.launch {
                     if (resetBio) {
-                        artistInfoRepository?.resetCustomArtistBio(displayArtistName)
+                        artistInfoRepository?.resetCustomArtistBio(
+                            artistName = displayArtistName,
+                            referenceTrackTitles = referenceTrackTitles,
+                            referenceAlbumTitles = referenceAlbumTitles
+                        )
                     } else if (newBio != artistInfo?.biography) {
                         artistInfoRepository?.setCustomArtistBio(displayArtistName, newBio)
                     }

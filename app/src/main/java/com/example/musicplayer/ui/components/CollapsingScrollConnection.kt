@@ -24,9 +24,11 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 fun rememberCollapsingScrollConnection(
     collapseThreshold: Float = -20f,
     expandThreshold: Float = 35f,
+    isEnabled: () -> Boolean = { true },
     onCollapse: () -> Unit,
     onExpand: () -> Unit
 ): NestedScrollConnection {
+    val currentIsEnabled by rememberUpdatedState(isEnabled)
     val currentOnCollapse by rememberUpdatedState(onCollapse)
     val currentOnExpand by rememberUpdatedState(onExpand)
 
@@ -35,6 +37,10 @@ fun rememberCollapsingScrollConnection(
             private var scrollAccumulator = 0f
 
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (!currentIsEnabled()) {
+                    scrollAccumulator = 0f
+                    return Offset.Zero
+                }
                 val delta = available.y
                 // Considera lo scroll verticale se Y è predominante
                 if (kotlin.math.abs(delta) >= kotlin.math.abs(available.x)) {
@@ -62,6 +68,10 @@ fun rememberCollapsingScrollConnection(
                 available: Offset,
                 source: NestedScrollSource
             ): Offset {
+                if (!currentIsEnabled()) {
+                    scrollAccumulator = 0f
+                    return Offset.Zero
+                }
                 val delta = available.y
                 // Cattura il trascinamento verso il basso quando la lista ha già raggiunto la cima (scroll non consumato)
                 if (delta > 0f && kotlin.math.abs(delta) >= kotlin.math.abs(available.x)) {

@@ -214,7 +214,10 @@ class MetadataEnricherCoordinator(
 
         // Carica in background i candidati alternativi da Deezer senza bloccare la sottofinestra
         activeSearchJob = scope.launch {
-            val candidates = enricherRepository.searchCustom(currentMeta.title, currentMeta.artist)
+            val (searchArtist, searchTitle) = QuerySanitizer.getEffectiveSearchTerms(
+                track.copy(title = currentMeta.title, artist = currentMeta.artist)
+            )
+            val candidates = enricherRepository.searchCustom(searchTitle, searchArtist)
                 .getOrNull()
                 .orEmpty()
             val stateNow = _enricherState.value
@@ -513,12 +516,25 @@ class MetadataEnricherCoordinator(
                 // In Uniforma Album:
                 // - Preserva sempre il titolo locale se è già pulito e valido (non "Sconosciuto", non "Track 01", non nome file grezzo).
                 // - Preserva sempre l'artista locale del brano se è già valido (mantenendo così i feat. e collaboratori).
-                val isLocalTitleDirty = QuerySanitizer.isTitleUnknownOrDirty(track.title, track.displayName, track.artist)
+                val isLocalTitleDirty = QuerySanitizer.isTitleUnknownOrDirty(
+                    track.title,
+                    track.displayName,
+                    track.artist,
+                    track.albumArtist
+                )
                 val resolvedTitle = if (!isLocalTitleDirty) {
                     track.title.trim()
                 } else {
                     officialTrackInfo?.title?.takeIf { it.isNotBlank() }
-                        ?: ind.title.takeIf { it.isNotBlank() }
+                        ?: ind.title.takeIf {
+                            it.isNotBlank() && !QuerySanitizer.isTitleUnknownOrDirty(
+                                it,
+                                track.displayName,
+                                track.artist,
+                                track.albumArtist
+                            )
+                        }
+                        ?: QuerySanitizer.getEffectiveSearchTerms(track).second.takeIf { it.isNotBlank() }
                         ?: QuerySanitizer.cleanFileName(track.displayName).title.ifBlank { track.title.trim() }
                 }
 

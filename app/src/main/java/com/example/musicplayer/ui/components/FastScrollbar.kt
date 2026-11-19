@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.musicplayer.data.stripLeadingSortPunctuation
 import com.example.musicplayer.ui.theme.LocalMusicVioletNeon
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -63,13 +64,17 @@ import kotlin.math.roundToInt
  * e normalizza i caratteri accentati (es. "Édith Piaf" -> "E").
  */
 fun extractAlphabeticalHeader(title: String): String {
-    val trimmed = title.trim().trim('"', '\'', '(', '[', '{', '«', '“', '‘', '`')
+    val trimmed = stripLeadingSortPunctuation(title)
     if (trimmed.isEmpty()) return "#"
     val firstChar = trimmed.first()
     return if (firstChar.isLetter()) {
-        val normalized = java.text.Normalizer.normalize(firstChar.toString(), java.text.Normalizer.Form.NFD)
-        val stripped = normalized.replace("\\p{Mn}+".toRegex(), "")
-        (stripped.firstOrNull() ?: firstChar).uppercase()
+        if (firstChar.code < 128) {
+            firstChar.uppercaseChar().toString()
+        } else {
+            val normalized = java.text.Normalizer.normalize(firstChar.toString(), java.text.Normalizer.Form.NFD)
+            val stripped = normalized.replace("\\p{Mn}+".toRegex(), "")
+            (stripped.firstOrNull() ?: firstChar).uppercase()
+        }
     } else {
         "#"
     }
@@ -161,7 +166,7 @@ fun FastScrollbar(
             val firstOffset = gridState.firstVisibleItemScrollOffset
             val firstHeight = first.size.height.coerceAtLeast(1)
             val itemProgress = (firstOffset.toFloat() / firstHeight.toFloat()).coerceIn(0f, 1f)
-            val floatIndex = firstIndex.toFloat() + itemProgress
+            val floatIndex = firstIndex.toFloat() + itemProgress * 2f
             val maxScrollIndex = (totalItems - visibleItems.size).coerceAtLeast(1).toFloat()
             (floatIndex / maxScrollIndex).coerceIn(0f, 1f)
         }

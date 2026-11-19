@@ -100,6 +100,7 @@ import com.example.musicplayer.data.formatDurationMs
 import com.example.musicplayer.data.tagger.model.DeezerSearchTrack
 import com.example.musicplayer.data.tagger.model.EnrichedMetadata
 import com.example.musicplayer.data.tagger.repository.EnricherOptions
+import com.example.musicplayer.data.tagger.sanitizer.QuerySanitizer
 import com.example.musicplayer.data.tagger.writer.loadResizedJpegBytesFromUri
 
 sealed class EnricherUiState {
@@ -476,10 +477,34 @@ private fun ReviewTrackContent(
     var editedTrackNumber by remember(enriched) { mutableStateOf(enriched.trackNumber?.toString().orEmpty()) }
     var editedDiscNumber by remember(enriched) { mutableStateOf(enriched.discNumber?.toString() ?: "1") }
 
-    // Ricerca manuale & candidati alternativi
+    // Ricerca manuale & candidati alternativi (pre-compilati con termini già puliti da "Nome Artista - Canzone")
+    val initialSearchTerms = remember(track) {
+        val (sanitizedArtist, sanitizedTitle) = QuerySanitizer.getEffectiveSearchTerms(track)
+        val fallbackSplit = QuerySanitizer.extractFallbackArtistAndTitle(track.title)
+        val preferredTitle = when {
+            enriched.title.isNotBlank() &&
+                !QuerySanitizer.isTitleUnknownOrDirty(enriched.title, track.displayName, enriched.artist, track.albumArtist) ->
+                QuerySanitizer.stripFeaturingAndEdition(enriched.title).ifBlank { enriched.title }
+            sanitizedTitle.isNotBlank() &&
+                !QuerySanitizer.isTitleUnknownOrDirty(sanitizedTitle, track.displayName, sanitizedArtist, track.albumArtist) ->
+                sanitizedTitle
+            fallbackSplit != null -> fallbackSplit.second
+            else -> sanitizedTitle.ifBlank { track.title }
+        }
+        val preferredArtist = when {
+            !QuerySanitizer.isArtistUnknownOrDirty(enriched.artist) ->
+                QuerySanitizer.cleanArtistString(enriched.artist).ifBlank { enriched.artist }
+            sanitizedArtist.isNotBlank() -> sanitizedArtist
+            fallbackSplit != null -> fallbackSplit.first
+            !QuerySanitizer.isArtistUnknownOrDirty(track.artist) ->
+                QuerySanitizer.cleanArtistString(track.artist).ifBlank { track.artist }
+            else -> ""
+        }
+        preferredArtist to preferredTitle
+    }
     var showAlternativeSearch by remember { mutableStateOf(false) }
-    var customSearchTitle by remember(track) { mutableStateOf(track.title) }
-    var customSearchArtist by remember(track) { mutableStateOf(track.artist) }
+    var customSearchTitle by remember(track) { mutableStateOf(initialSearchTerms.second) }
+    var customSearchArtist by remember(track) { mutableStateOf(initialSearchTerms.first) }
 
     Column(
         modifier = Modifier

@@ -10,6 +10,7 @@ package com.example.musicplayer.data
  * @param isCustomPhoto Indica se la foto profilo è stata impostata manualmente dall'utente.
  * @param isCustomBio Indica se la biografia è stata modificata o impostata manualmente dall'utente.
  * @param lastUpdated Timestamp di ultimo aggiornamento locale della cache.
+ * @param disambiguationVersion Versione del motore di disambiguazione anti-omonimia con cui è stata verificata la voce.
  */
 data class ArtistInfo(
     val name: String,
@@ -18,5 +19,6 @@ data class ArtistInfo(
     val source: String? = null,
     val isCustomPhoto: Boolean = false,
     val isCustomBio: Boolean = false,
-    val lastUpdated: Long = System.currentTimeMillis()
+    val lastUpdated: Long = System.currentTimeMillis(),
+    val disambiguationVersion: Int = 0
 )

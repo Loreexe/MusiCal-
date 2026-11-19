@@ -38,6 +38,11 @@ class LastFmSessionManager(context: Context) {
         private const val ENCRYPTED_PREFIX = "enc:v1:"
     }
 
+    @Volatile
+    private var cachedSessionKey: String? = null
+    @Volatile
+    private var isSessionKeyLoaded: Boolean = false
+
     init {
         LastFmConfig.setCustomCredentials(
             apiKey = getCustomApiKey(),
@@ -71,6 +76,8 @@ class LastFmSessionManager(context: Context) {
 
     fun saveSession(username: String, sessionKey: String) {
         val encryptedSessionKey = encryptValue(sessionKey) ?: return
+        cachedSessionKey = sessionKey
+        isSessionKeyLoaded = true
         prefs.edit()
             .putString(KEY_USERNAME, username)
             .putString(KEY_SESSION_KEY, encryptedSessionKey)
@@ -89,6 +96,8 @@ class LastFmSessionManager(context: Context) {
     fun getAvatarHash(): String? = prefs.getString(KEY_AVATAR_HASH, null)
 
     fun clearSession() {
+        cachedSessionKey = null
+        isSessionKeyLoaded = true
         getAvatarPath()?.let { path ->
             try {
                 File(path).delete()
@@ -102,7 +111,13 @@ class LastFmSessionManager(context: Context) {
             .apply()
     }
 
-    fun getSessionKey(): String? = readProtectedString(KEY_SESSION_KEY)
+    fun getSessionKey(): String? {
+        if (isSessionKeyLoaded) return cachedSessionKey
+        val loaded = readProtectedString(KEY_SESSION_KEY)
+        cachedSessionKey = loaded
+        isSessionKeyLoaded = true
+        return loaded
+    }
 
     fun getUsername(): String? = prefs.getString(KEY_USERNAME, null)
 

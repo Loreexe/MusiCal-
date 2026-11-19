@@ -32,7 +32,7 @@ class Media3BitmapLoader(private val context: Context) : BitmapLoader {
         val future = SettableFuture.create<Bitmap>()
         executor.execute {
             try {
-                val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
+                val bitmap = decodeSampledBitmapFromBytes(data)
                 if (bitmap != null) {
                     future.set(bitmap)
                 } else {
@@ -71,6 +71,61 @@ class Media3BitmapLoader(private val context: Context) : BitmapLoader {
     }
 
     companion object {
+        const val MAX_NOTIFICATION_ART_PX = 512
+
+        /**
+         * Calcola il fattore di sottocampionamento (potenza di 2) per limitare le dimensioni della copertina
+         * in notifica ed evitare TransactionTooLargeException / Bad notification.
+         */
+        fun calculateInSampleSize(
+            rawWidth: Int,
+            rawHeight: Int,
+            maxSize: Int = MAX_NOTIFICATION_ART_PX
+        ): Int {
+            if (rawWidth <= 0 || rawHeight <= 0 || maxSize <= 0) return 1
+            var inSampleSize = 1
+            while ((rawWidth / inSampleSize) > maxSize * 2 || (rawHeight / inSampleSize) > maxSize * 2) {
+                inSampleSize *= 2
+            }
+            if (inSampleSize == 1 && (rawWidth > maxSize || rawHeight > maxSize)) {
+                inSampleSize = 2
+            }
+            return inSampleSize
+        }
+
+        private fun scaleBitmapIfNeeded(bitmap: Bitmap, maxSize: Int = MAX_NOTIFICATION_ART_PX): Bitmap {
+            val width = bitmap.width
+            val height = bitmap.height
+            if (width <= maxSize && height <= maxSize) return bitmap
+            val scale = minOf(maxSize.toFloat() / width, maxSize.toFloat() / height)
+            val targetWidth = (width * scale).toInt().coerceAtLeast(1)
+            val targetHeight = (height * scale).toInt().coerceAtLeast(1)
+            val scaled = Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+            if (scaled !== bitmap) {
+                bitmap.recycle()
+            }
+            return scaled
+        }
+
+        fun decodeSampledBitmapFromBytes(
+            data: ByteArray,
+            maxSize: Int = MAX_NOTIFICATION_ART_PX
+        ): Bitmap? {
+            val boundsOptions = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            BitmapFactory.decodeByteArray(data, 0, data.size, boundsOptions)
+            if (boundsOptions.outWidth <= 0 || boundsOptions.outHeight <= 0) {
+                return BitmapFactory.decodeByteArray(data, 0, data.size)?.let { scaleBitmapIfNeeded(it, maxSize) }
+            }
+            val decodeOptions = BitmapFactory.Options().apply {
+                inSampleSize = calculateInSampleSize(boundsOptions.outWidth, boundsOptions.outHeight, maxSize)
+            }
+            return BitmapFactory.decodeByteArray(data, 0, data.size, decodeOptions)?.let {
+                scaleBitmapIfNeeded(it, maxSize)
+            }
+        }
+
         /**
          * Tenta di caricare il bitmap della copertina con strategie progressive su Android 16.
          */
@@ -79,26 +134,41 @@ class Media3BitmapLoader(private val context: Context) : BitmapLoader {
 
             // 1. API moderna Android 10+ (API 29..36) per MediaStore
             try {
-                return contentResolver.loadThumbnail(uri, Size(512, 512), null)
+                return contentResolver.loadThumbnail(uri, Size(MAX_NOTIFICATION_ART_PX, MAX_NOTIFICATION_ART_PX), null)
             } catch (_: Exception) {
             }
 
-            // 2. Stream diretto (supporta file://, content:// legacy e risorse)
+            // 2. Stream diretto (supporta file://, content:// legacy e risorse) con downsampling sicuro
             try {
+                val boundsOptions = BitmapFactory.Options().apply {
+                    inJustDecodeBounds = true
+                }
                 contentResolver.openInputStream(uri)?.use { stream ->
-                    val bitmap = BitmapFactory.decodeStream(stream)
-                    if (bitmap != null) return bitmap
+                    BitmapFactory.decodeStream(stream, null, boundsOptions)
+                }
+                val decodeOptions = BitmapFactory.Options().apply {
+                    if (boundsOptions.outWidth > 0 && boundsOptions.outHeight > 0) {
+                        inSampleSize = calculateInSampleSize(
+                            boundsOptions.outWidth,
+                            boundsOptions.outHeight,
+                            MAX_NOTIFICATION_ART_PX
+                        )
+                    }
+                }
+                contentResolver.openInputStream(uri)?.use { stream ->
+                    val bitmap = BitmapFactory.decodeStream(stream, null, decodeOptions)
+                    if (bitmap != null) return scaleBitmapIfNeeded(bitmap, MAX_NOTIFICATION_ART_PX)
                 }
             } catch (_: Exception) {
             }
 
-            // 3. Fallback tramite MediaMetadataRetriever su file audio
+            // 3. Fallback tramite MediaMetadataRetriever su file audio con downsampling sicuro
             try {
                 MediaMetadataRetriever().use { retriever ->
                     retriever.setDataSource(context, uri)
                     val rawPicture = retriever.embeddedPicture
                     if (rawPicture != null) {
-                        val bitmap = BitmapFactory.decodeByteArray(rawPicture, 0, rawPicture.size)
+                        val bitmap = decodeSampledBitmapFromBytes(rawPicture, MAX_NOTIFICATION_ART_PX)
                         if (bitmap != null) return bitmap
                     }
                 }

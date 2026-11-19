@@ -32,19 +32,26 @@ class DeezerApiClient(
     suspend fun searchTrack(title: String, artist: String): Result<List<DeezerSearchTrack>> =
         withContext(Dispatchers.IO) {
             try {
-                val coreTitle = QuerySanitizer.stripFeaturingAndEdition(title).ifBlank { title.trim() }
-                val primaryArtist = QuerySanitizer.extractPrimaryArtistForSearch(artist)
+                val coreTitle = (QuerySanitizer.stripFeaturingAndEdition(title).ifBlank { title.trim() })
+                    .replace("\"", "")
+                    .trim()
+                val cleanArtist = QuerySanitizer.cleanArtistString(artist).ifBlank { artist.trim() }
+                    .replace("\"", "")
+                    .trim()
+                val primaryArtist = QuerySanitizer.extractPrimaryArtistForSearch(cleanArtist)
+                    .replace("\"", "")
+                    .trim()
 
                 // Tentativo 1: query avanzata strutturata con artista completo
                 val advancedQuery = buildString {
                     if (coreTitle.isNotBlank()) append("track:\"$coreTitle\" ")
-                    if (artist.isNotBlank()) append("artist:\"$artist\"")
+                    if (cleanArtist.isNotBlank()) append("artist:\"$cleanArtist\"")
                 }.trim()
 
                 var results = if (advancedQuery.isNotBlank()) executeSearch(advancedQuery) else emptyList()
 
                 // Tentativo 2: se l'artista conteneva feat./collaboratori, riprova con l'artista principale
-                if (results.isEmpty() && primaryArtist.isNotBlank() && !primaryArtist.equals(artist.trim(), ignoreCase = true)) {
+                if (results.isEmpty() && primaryArtist.isNotBlank() && !primaryArtist.equals(cleanArtist, ignoreCase = true)) {
                     val primaryQuery = buildString {
                         if (coreTitle.isNotBlank()) append("track:\"$coreTitle\" ")
                         append("artist:\"$primaryArtist\"")
@@ -53,8 +60,8 @@ class DeezerApiClient(
                 }
 
                 // Tentativo 3 (fallback): ricerca testuale libera se la query avanzata non ha trovato nulla
-                if (results.isEmpty() && (coreTitle.isNotBlank() || artist.isNotBlank())) {
-                    val searchArtist = primaryArtist.ifBlank { artist.trim() }
+                if (results.isEmpty() && (coreTitle.isNotBlank() || cleanArtist.isNotBlank())) {
+                    val searchArtist = primaryArtist.ifBlank { cleanArtist }
                     val broadQuery = "$searchArtist $coreTitle".trim()
                     results = executeSearch(broadQuery)
                 }

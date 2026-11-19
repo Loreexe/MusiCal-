@@ -1,9 +1,12 @@
 package com.example.musicplayer.ui.components
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +31,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,31 +40,65 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.musicplayer.R
+import com.example.musicplayer.data.LyricLine
 import com.example.musicplayer.data.LyricsData
 import kotlinx.coroutines.delay
+import kotlin.math.abs
 
 /**
- * Anticipo temporale automatico (150ms) per compensare la latenza vocale hardware e Bluetooth.
+ * Anticipo temporale automatico (350ms) per compensare la latenza vocale hardware/DSP/Bluetooth
+ * e la durata della transizione visiva di centramento, facendo sì che il verso sia già centrato
+ * e illuminato all'attacco vocale.
  */
-private const val AUTO_SYNC_LEAD_MS = 150L
+internal const val AUTO_SYNC_LEAD_MS = 350L
 
 /**
- * Visualizzatore di testi sincronizzati in stile Karaoke fluido, con auto-scroll ottimizzato,
- * centratura della riga attiva nel viewport, protezione durante lo scorrimento manuale,
- * tap-to-seek interattivo e gestione dedicata dei brani strumentali.
+ * Ricerca binaria O(log N) dell'indice del verso attivo al tempo [currentPositionMs] con anticipo [leadMs].
+ */
+internal fun findActiveLyricIndex(
+    lines: List<LyricLine>,
+    isSynced: Boolean,
+    currentPositionMs: Long,
+    leadMs: Long = AUTO_SYNC_LEAD_MS
+): Int {
+    if (!isSynced || lines.isEmpty()) return -1
+    val effectivePosition = (currentPositionMs + leadMs).coerceAtLeast(0L)
+    var low = 0
+    var high = lines.lastIndex
+    var result = -1
+    while (low <= high) {
+        val mid = (low + high) ushr 1
+        val midTime = lines[mid].timeMs
+        if (midTime < 0L) {
+            high = mid - 1
+        } else if (midTime <= effectivePosition) {
+            result = mid
+            low = mid + 1
+        } else {
+            high = mid - 1
+        }
+    }
+    return if (result >= 0) result else 0
+}
+
+/**
+ * Visualizzatore di testi sincronizzati in stile Karaoke fluido, con auto-scroll rapido (220ms),
+ * centratura della riga attiva nel viewport, protezione durante il trascinamento manuale dell'utente
+ * (senza interferenze con l'auto-scroll programmatico), tap-to-seek interattivo e gestione dei brani strumentali.
  */
 @Composable
 fun SyncedLyricsView(
     lyricsData: LyricsData?,
-    currentPositionMs: Long,
     onSeekTo: (Long) -> Unit,
     modifier: Modifier = Modifier,
+    currentPositionMs: Long = 0L,
+    currentPositionProvider: () -> Long = { currentPositionMs },
     isInstrumental: Boolean = lyricsData?.isInstrumental == true
 ) {
     if (isInstrumental) {
@@ -152,48 +190,123 @@ fun SyncedLyricsView(
     val lines = lyricsData.lines
     val isSynced = lyricsData.isSynced
 
-    // Trova l'indice del verso correntemente attivo applicando la compensazione automatica
-    val effectivePosition = (currentPositionMs + AUTO_SYNC_LEAD_MS).coerceAtLeast(0L)
-    val activeIndex = remember(effectivePosition, lines, isSynced) {
-        if (!isSynced || lines.isEmpty()) -1
-        else {
-            val idx = lines.indexOfLast { it.timeMs in 0..effectivePosition }
-            if (idx >= 0) idx else 0
+    // Calcola reattivamente l'indice attivo senza causare ricomposizioni finché il verso non cambia
+    val activeIndex by remember(lines, isSynced, currentPositionProvider, currentPositionMs) {
+        derivedStateOf {
+            findActiveLyricIndex(
+                lines = lines,
+                isSynced = isSynced,
+                currentPositionMs = currentPositionProvider()
+            )
         }
     }
 
     val listState = rememberLazyListState()
+    val isDragged by listState.interactionSource.collectIsDraggedAsState()
     var isUserScrolling by remember { mutableStateOf(false) }
+    var hasInitialScrolled by remember(lyricsData.trackId) { mutableStateOf(false) }
 
-    // Sospensione dell'auto-scroll quando l'utente scorre manualmente con il dito, con riaggancio morbido
-    LaunchedEffect(listState.isScrollInProgress) {
-        if (listState.isScrollInProgress) {
+    // Sospensione dell'auto-scroll SOLO quando l'utente trascina fisicamente la lista con il dito.
+    // Lo scorrimento automatico programmatico non imposta mai isDragged = true e non si auto-cancella.
+    LaunchedEffect(isDragged) {
+        if (isDragged) {
             isUserScrolling = true
         } else if (isUserScrolling) {
-            delay(2500L)
+            while (listState.isScrollInProgress) {
+                delay(50L)
+            }
+            delay(1500L)
             isUserScrolling = false
         }
     }
 
-    // Scorrimento automatico fluido con centratura della riga attiva nel viewport
-    LaunchedEffect(activeIndex, isUserScrolling) {
+    // Scorrimento automatico rapido (220ms) con centratura millimetrica della riga attiva nel viewport
+    LaunchedEffect(activeIndex, isUserScrolling, lyricsData.trackId) {
         if (activeIndex >= 0 && !isUserScrolling && lines.isNotEmpty()) {
-            val viewportHeight = listState.layoutInfo.viewportSize.height
-            val activeItemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == activeIndex }
-
-            val scrollOffset = if (activeIndex == 0) {
+            val initialViewportHeight = listState.layoutInfo.viewportSize.height
+            val initialVisible = listState.layoutInfo.visibleItemsInfo
+            val initialActiveItem = initialVisible.firstOrNull { it.index == activeIndex }
+            val avgItemHeight = if (initialVisible.isNotEmpty()) {
+                initialVisible.sumOf { it.size } / initialVisible.size
+            } else {
+                120
+            }
+            val estimatedItemHeight = initialActiveItem?.size ?: avgItemHeight
+            val estimatedScrollOffset = if (activeIndex == 0) {
                 0
-            } else if (viewportHeight > 0) {
-                val itemHeight = activeItemInfo?.size ?: 50
-                -((viewportHeight - itemHeight) / 2)
+            } else if (initialViewportHeight > 0) {
+                -((initialViewportHeight - estimatedItemHeight) / 2)
             } else {
                 0
             }
 
-            listState.animateScrollToItem(
-                index = activeIndex,
-                scrollOffset = scrollOffset
-            )
+            if (!hasInitialScrolled) {
+                hasInitialScrolled = true
+                listState.scrollToItem(
+                    index = activeIndex,
+                    scrollOffset = estimatedScrollOffset
+                )
+                val postItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == activeIndex }
+                val vh = listState.layoutInfo.viewportSize.height
+                if (postItem != null && vh > 0 && activeIndex > 0) {
+                    val targetOffset = ((vh - postItem.size) / 2).coerceAtLeast(0)
+                    val correction = (postItem.offset - targetOffset).toFloat()
+                    if (abs(correction) > 1f) {
+                        listState.scroll { scrollBy(correction) }
+                    }
+                }
+                return@LaunchedEffect
+            }
+
+            // Se la riga di destinazione è fuori schermo (es. salto ampio tramite seekbar),
+            // pre-posiziona vicino al target prima dell'animazione fluida di 220ms
+            if (initialActiveItem == null) {
+                val firstVisible = listState.firstVisibleItemIndex
+                if (abs(activeIndex - firstVisible) > 6) {
+                    val preJumpIndex = if (activeIndex > firstVisible) {
+                        (activeIndex - 3).coerceAtLeast(0)
+                    } else {
+                        (activeIndex + 3).coerceAtMost(lines.lastIndex)
+                    }
+                    listState.scrollToItem(index = preJumpIndex, scrollOffset = estimatedScrollOffset)
+                } else {
+                    listState.animateScrollToItem(
+                        index = activeIndex,
+                        scrollOffset = estimatedScrollOffset
+                    )
+                    return@LaunchedEffect
+                }
+            }
+
+            val targetBeforeAnim = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == activeIndex }
+            if (targetBeforeAnim == null) {
+                listState.animateScrollToItem(
+                    index = activeIndex,
+                    scrollOffset = estimatedScrollOffset
+                )
+            } else {
+                listState.scroll {
+                    var lastFraction = 0f
+                    animate(
+                        initialValue = 0f,
+                        targetValue = 1f,
+                        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing)
+                    ) { fraction, _ ->
+                        val currentItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == activeIndex }
+                        val vh = listState.layoutInfo.viewportSize.height
+                        if (currentItem != null && vh > 0) {
+                            val targetOffset = if (activeIndex == 0) 0 else ((vh - currentItem.size) / 2).coerceAtLeast(0)
+                            val remainingDelta = (currentItem.offset - targetOffset).toFloat()
+                            val remainingFraction = 1f - lastFraction
+                            if (remainingFraction > 0.001f && abs(remainingDelta) > 0.5f) {
+                                val stepFraction = ((fraction - lastFraction) / remainingFraction).coerceIn(0f, 1f)
+                                scrollBy(remainingDelta * stepFraction)
+                            }
+                        }
+                        lastFraction = fraction
+                    }
+                }
+            }
         }
     }
 
@@ -212,7 +325,7 @@ fun SyncedLyricsView(
                     isSynced -> Color.White.copy(alpha = 0.45f)
                     else -> Color.White.copy(alpha = 0.85f)
                 },
-                animationSpec = tween(durationMillis = 200),
+                animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
                 label = "lyricTextColor"
             )
 

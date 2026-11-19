@@ -64,6 +64,10 @@
     <string name="settings_equalizer_title">Audio equalizer</string>
     <string name="settings_equalizer_desc">Adjust 5 frequency bands, bass boost and virtualizer</string>
     <string name="settings_sleep_timer_desc">Stop music with a timer or at the end of track with fade-out</string>
+    <string name="settings_battery_background_title">Background playback (Battery)</string>
+    <string name="settings_battery_unrestricted">Unrestricted — background playback protected</string>
+    <string name="settings_battery_optimized">Optimized — tap to prevent interruptions when leaving the app</string>
+    <string name="playback_notification_channel_name">Music playback</string>
     <string name="settings_stats_title">Listening statistics</string>
     <string name="settings_stats_desc">View top played songs, artists and total listening time</string>
     <string name="settings_section_library">Music Library</string>

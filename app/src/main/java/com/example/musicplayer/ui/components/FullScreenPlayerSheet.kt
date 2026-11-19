@@ -156,7 +156,9 @@ fun FullScreenPlayerSheet(
     onContextClick: (() -> Unit)? = null,
     onArtistClick: ((String) -> Unit)? = null,
     onOpenSleepTimer: () -> Unit = {},
-    artistInfoRepository: ArtistInfoRepository? = null
+    artistInfoRepository: ArtistInfoRepository? = null,
+    referenceTrackTitles: List<String> = emptyList(),
+    referenceAlbumTitles: List<String> = emptyList()
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val context = LocalContext.current
@@ -167,9 +169,27 @@ fun FullScreenPlayerSheet(
     val displayArtistName = remember(currentArtistName) {
         extractMainArtist(currentArtistName).ifBlank { currentArtistName }
     }
-    val artistInfoFlow = remember(displayArtistName, artistInfoRepository) {
+    val effectiveReferenceTracks = remember(referenceTrackTitles, currentTrack) {
+        if (referenceTrackTitles.isNotEmpty()) {
+            referenceTrackTitles
+        } else {
+            listOfNotNull(currentTrack?.title?.takeIf { it.isNotBlank() })
+        }
+    }
+    val effectiveReferenceAlbums = remember(referenceAlbumTitles, currentTrack) {
+        if (referenceAlbumTitles.isNotEmpty()) {
+            referenceAlbumTitles
+        } else {
+            listOfNotNull(currentTrack?.album?.takeIf { it.isNotBlank() })
+        }
+    }
+    val artistInfoFlow = remember(displayArtistName, artistInfoRepository, effectiveReferenceTracks, effectiveReferenceAlbums) {
         if (displayArtistName.isNotBlank() && artistInfoRepository != null) {
-            artistInfoRepository.getArtistInfoFlow(displayArtistName)
+            artistInfoRepository.getArtistInfoFlow(
+                artistName = displayArtistName,
+                referenceTrackTitles = effectiveReferenceTracks,
+                referenceAlbumTitles = effectiveReferenceAlbums
+            )
         } else null
     }
     val artistInfo by (artistInfoFlow?.collectAsStateWithLifecycle(initialValue = null)
@@ -530,7 +550,7 @@ fun FullScreenPlayerSheet(
                 if (showLyrics) {
                     SyncedLyricsView(
                         lyricsData = currentLyrics,
-                        currentPositionMs = currentPositionProvider(),
+                        currentPositionProvider = currentPositionProvider,
                         onSeekTo = onSeekTo,
                         isInstrumental = currentLyrics?.isInstrumental == true || currentTrack?.isInstrumental() == true,
                         modifier = Modifier

@@ -2,15 +2,26 @@ package com.example.musicplayer.data.tagger
 
 import com.example.musicplayer.data.AudioTrack
 import com.example.musicplayer.data.LyricsRepository
+import com.example.musicplayer.data.tagger.client.DeezerApiClient
+import com.example.musicplayer.data.tagger.client.LrclibApiClient
 import com.example.musicplayer.data.tagger.model.DeezerAlbumDetail
 import com.example.musicplayer.data.tagger.model.DeezerAlbumTrackInfo
 import com.example.musicplayer.data.tagger.model.DeezerTrackDetail
+import com.example.musicplayer.data.tagger.repository.EnricherOptions
 import com.example.musicplayer.data.tagger.repository.MetadataEnricherRepository
+import kotlinx.coroutines.runBlocking
+import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.Mockito
+import java.net.URLDecoder
 
 class DeezerAndLrclibParsingTest {
 
@@ -102,5 +113,126 @@ class DeezerAndLrclibParsingTest {
         assertEquals("Like the legend of the phoenix", parsed.lines[0].text)
         assertEquals(19200L, parsed.lines[1].timeMs)
         assertEquals(23000L, parsed.lines[2].timeMs)
+    }
+
+    @Test
+    fun testEnrichTrackWithArtistPrefixInTitleAndSpuriousLocalArtist() = runBlocking {
+        val mockClient = OkHttpClient.Builder()
+            .addInterceptor(Interceptor { chain ->
+                val url = chain.request().url.toString()
+                val path = chain.request().url.encodedPath
+                val queryParam = URLDecoder.decode(chain.request().url.queryParameter("q").orEmpty(), "UTF-8")
+
+                val jsonBody = when {
+                    path.startsWith("/search") &&
+                        queryParam.contains("Tango", ignoreCase = true) &&
+                        !queryParam.contains("Tananai - Tango", ignoreCase = true) &&
+                        queryParam.contains("Tananai", ignoreCase = true) -> {
+                        """
+                        {
+                          "data": [
+                            {
+                              "id": 9991,
+                              "title": "Tango",
+                              "title_short": "Tango",
+                              "duration": 212,
+                              "artist": { "name": "Tananai" },
+                              "album": {
+                                "id": 5551,
+                                "title": "RAVE, ECLISSI",
+                                "cover_xl": "https://example.com/tango.jpg"
+                              }
+                            }
+                          ]
+                        }
+                        """.trimIndent()
+                    }
+                    path.startsWith("/search") -> """{"data": []}"""
+                    path == "/album/5551" -> {
+                        """
+                        {
+                          "id": 5551,
+                          "title": "RAVE, ECLISSI",
+                          "release_date": "2022-11-25",
+                          "record_type": "album",
+                          "artist": { "name": "Tananai" },
+                          "cover_xl": "https://example.com/tango.jpg",
+                          "genres": { "data": [ { "name": "Pop" } ] },
+                          "tracks": {
+                            "data": [
+                              { "id": 9991, "title": "Tango", "track_position": 4, "disk_number": 1 }
+                            ]
+                          },
+                          "nb_tracks": 1
+                        }
+                        """.trimIndent()
+                    }
+                    url.contains("lrclib.net") -> """{"id": 1, "trackName": "Tango", "artistName": "Tananai", "syncedLyrics": "[00:10.00] Linea"}"""
+                    else -> """{}"""
+                }
+
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(jsonBody.toResponseBody("application/json".toMediaType()))
+                    .build()
+            })
+            .build()
+
+        val repo = MetadataEnricherRepository(
+            deezerClient = DeezerApiClient(mockClient),
+            lrclibClient = LrclibApiClient(mockClient)
+        )
+        val mockUri = Mockito.mock(android.net.Uri::class.java)
+        val track = AudioTrack(
+            id = 50L,
+            title = "Tananai - Tango",
+            artist = "YouTubeDownloader",
+            duration = 212_000L,
+            uri = mockUri,
+            displayName = "download_audio_50.mp3"
+        )
+
+        val result = repo.enrichTrackWithCandidates(
+            track = track,
+            options = EnricherOptions(embedCover = false, includeLyrics = true)
+        ).getOrThrow()
+
+        assertEquals("Tango", result.first.title)
+        assertEquals("Tananai", result.first.artist)
+        assertEquals("RAVE, ECLISSI", result.first.album)
+        assertEquals(4, result.first.trackNumber)
+        assertTrue(result.first.hasSyncedLyrics)
+        assertEquals(1, result.second.size)
+
+        // Verifica anche che searchCustom faccia fallback automatico se il titolo inserito contiene "Artista - Canzone"
+        val customResults = repo.searchCustom("Tananai - Tango", "").getOrThrow()
+        assertEquals(1, customResults.size)
+        assertEquals("Tango", customResults.first().title)
+    }
+
+    @Test
+    fun testAlignAlbumTracksWithArtistPrefixInTitle() {
+        val repo = MetadataEnricherRepository()
+        val mockUri = Mockito.mock(android.net.Uri::class.java)
+        val localTracks = listOf(
+            AudioTrack(
+                id = 201L,
+                title = "Daft Punk - Digital Love",
+                artist = "CanaleSbagliato",
+                duration = 298000L,
+                album = "Discovery",
+                uri = mockUri,
+                displayName = "track_unknown.mp3"
+            )
+        )
+        val official = listOf(
+            DeezerAlbumTrackInfo(id = 3L, title = "Digital Love", trackPosition = 3, diskNumber = 1)
+        )
+
+        val aligned = repo.alignAlbumTracks(localTracks, official)
+        assertEquals(3, aligned[201L]?.trackPosition)
     }
 }

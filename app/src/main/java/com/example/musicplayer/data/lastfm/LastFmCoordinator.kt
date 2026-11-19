@@ -138,9 +138,8 @@ class LastFmCoordinator(
     }
 
     fun checkAndTriggerScrobble(positionMs: Long, durationMs: Long) {
-        if (scrobbleSentForCurrentTrack) return
+        if (scrobbleSentForCurrentTrack || !_isLastFmLoggedIn.value) return
         val track = getCurrentTrack() ?: return
-        val sessionKey = lastFmSessionManager.getSessionKey() ?: return
 
         val trackDurMs = if (durationMs > 0L) durationMs else track.duration
         if (trackDurMs < 30_000L) return
@@ -150,6 +149,7 @@ class LastFmCoordinator(
             scrobbleSentForCurrentTrack = true
             val startTime = currentTrackStartTimeSeconds
             scope.launch(Dispatchers.IO) {
+                val sessionKey = lastFmSessionManager.getSessionKey() ?: return@launch
                 if (!syncManager.isNetworkAvailable()) {
                     syncManager.savePendingScrobble(track, startTime)
                     Log.d("LastFm", "Dispositivo offline: scrobble salvato in cache Room per ${track.title} - ${track.artist}")

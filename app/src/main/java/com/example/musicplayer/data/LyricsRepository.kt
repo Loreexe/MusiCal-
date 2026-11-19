@@ -58,23 +58,50 @@ class LyricsRepository(private val context: Context) {
                 return@forEach
             }
 
-            val match = timeTagRegex.find(line)
-            if (match != null) {
+            val allMatches = timeTagRegex.findAll(line).toList()
+            if (allMatches.isNotEmpty()) {
                 foundTimestamp = true
-                val minutes = match.groupValues[1].toLongOrNull() ?: 0L
-                val seconds = match.groupValues[2].toLongOrNull() ?: 0L
-                val millisPart = match.groupValues.getOrNull(3).orEmpty()
-                val millis = when (millisPart.length) {
-                    1 -> (millisPart.toLongOrNull() ?: 0L) * 100
-                    2 -> (millisPart.toLongOrNull() ?: 0L) * 10
-                    3 -> millisPart.toLongOrNull() ?: 0L
-                    else -> 0L
-                }
-
-                val totalTimeMs = (minutes * 60 * 1000) + (seconds * 1000) + millis
                 val textContent = line.replace(timeTagRegex, "").trim()
                 if (textContent.isNotBlank()) {
-                    lines.add(LyricLine(totalTimeMs, textContent))
+                    val leadingTimestamps = mutableListOf<Long>()
+                    var expectedStartIndex = 0
+                    for (m in allMatches) {
+                        val gap = line.substring(expectedStartIndex, m.range.first)
+                        if (gap.isBlank()) {
+                            val minutes = m.groupValues[1].toLongOrNull() ?: 0L
+                            val seconds = m.groupValues[2].toLongOrNull() ?: 0L
+                            val millisPart = m.groupValues.getOrNull(3).orEmpty()
+                            val millis = when (millisPart.length) {
+                                1 -> (millisPart.toLongOrNull() ?: 0L) * 100
+                                2 -> (millisPart.toLongOrNull() ?: 0L) * 10
+                                3 -> millisPart.toLongOrNull() ?: 0L
+                                else -> 0L
+                            }
+                            leadingTimestamps.add((minutes * 60 * 1000) + (seconds * 1000) + millis)
+                            expectedStartIndex = m.range.last + 1
+                        } else {
+                            break
+                        }
+                    }
+
+                    if (leadingTimestamps.isNotEmpty()) {
+                        leadingTimestamps.forEach { ts ->
+                            lines.add(LyricLine(ts, textContent))
+                        }
+                    } else {
+                        val first = allMatches.first()
+                        val minutes = first.groupValues[1].toLongOrNull() ?: 0L
+                        val seconds = first.groupValues[2].toLongOrNull() ?: 0L
+                        val millisPart = first.groupValues.getOrNull(3).orEmpty()
+                        val millis = when (millisPart.length) {
+                            1 -> (millisPart.toLongOrNull() ?: 0L) * 100
+                            2 -> (millisPart.toLongOrNull() ?: 0L) * 10
+                            3 -> millisPart.toLongOrNull() ?: 0L
+                            else -> 0L
+                        }
+                        val totalTimeMs = (minutes * 60 * 1000) + (seconds * 1000) + millis
+                        lines.add(LyricLine(totalTimeMs, textContent))
+                    }
                 }
             } else if (trimmed.isNotBlank()) {
                 lines.add(LyricLine(-1L, trimmed))

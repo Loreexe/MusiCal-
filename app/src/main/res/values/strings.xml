@@ -64,6 +64,10 @@
     <string name="settings_equalizer_title">Equalizzatore audio</string>
     <string name="settings_equalizer_desc">Regola 5 bande di frequenza, bass boost e virtualizzatore</string>
     <string name="settings_sleep_timer_desc">Interrompi la musica con timer o a fine brano con dissolvenza</string>
+    <string name="settings_battery_background_title">Riproduzione in background (Batteria)</string>
+    <string name="settings_battery_unrestricted">Senza restrizioni — riproduzione in background protetta</string>
+    <string name="settings_battery_optimized">Ottimizzata — tocca per evitare interruzioni quando esci dall\'app</string>
+    <string name="playback_notification_channel_name">Riproduzione musicale</string>
     <string name="settings_stats_title">Statistiche d\'ascolto</string>
     <string name="settings_stats_desc">Visualizza brani e artisti più ascoltati e tempo totale</string>
     <string name="settings_section_library">Libreria Musicale</string>

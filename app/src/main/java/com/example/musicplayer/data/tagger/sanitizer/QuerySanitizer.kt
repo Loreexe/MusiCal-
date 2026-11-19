@@ -41,6 +41,21 @@ object QuerySanitizer {
         """(?i)[\(\[]\s*(official\s*(music\s*)?(video|audio|lyric\s*video)?|lyrics?\s*(video)?|visualizer|clip\s*officiel|((hd|hq|4k|hi-res|master)\s*(audio|video)?)|audio|video|full\s*track|youtube\s*rip)\s*[\)\]]"""
     )
 
+    private val TRAILING_DASH_NOISE_REGEX = Regex(
+        """(?i)\s+[-–—−]\s+(official\s*(music\s*)?(video|audio|lyric\s*video)|lyric\s*video|official\s+visualizer|visualizer|youtube\s*rip)\s*$"""
+    )
+
+    private val TOPIC_CHANNEL_SUFFIX_REGEX = Regex(
+        """(?i)\s+[-–—−]\s+topic\s*$"""
+    )
+
+    private val ARTIST_TITLE_SEPARATOR_REGEX = Regex("""\s+[-–—−]\s+""")
+    private val ASYMMETRIC_SEPARATOR_REGEX = Regex("""(?:\s+[-–—−](?=\S)|(?<=\S)[-–—−]\s+)""")
+
+    private val TITLE_VERSION_RIGHT_PART_REGEX = Regex(
+        """(?i)^(?:part|pt\.?)\s*(?:[ivxlcdm]+|\d+).*$|^(?:acoustic|live|remix|mix|edit|radio\s*edit|extended|instrumental|karaoke|demo|version|ver\.?|remaster(?:ed)?(?:\s*\d{4})?|bonus\s*track|intro|outro|interlude|skit|sped\s*up|slowed(?:\s*(?:&|\+|and)\s*reverb)?)(?:\s+.*)?$"""
+    )
+
     private val ALBUM_NORMALIZATION_REGEX = Regex(
         """(?i)\s*[\(\[]\s*(deluxe(\s*(edition|version))?|remaster(ed)?(\s*\d{4})?|(\d{1,2}(th|nd|rd|st)\s*)?anniversary(\s*edition)?|expanded(\s*edition)?|special\s*edition|bonus(\s*track)?\s*version|explicit(\s*version)?|clean(\s*version)?)\s*[\)\]]"""
     )
@@ -78,10 +93,29 @@ object QuerySanitizer {
         text = text.replace(AUDIO_EXTENSIONS_REGEX, "")
         text = text.replace(LEADING_TRACK_NUMBER_REGEX, "")
         text = text.replace(NOISE_TAGS_REGEX, "")
+        text = text.replace(TRAILING_DASH_NOISE_REGEX, "")
         text = text.replace(QUALITY_AND_BITRATE_REGEX, "")
         text = text.replace(EMPTY_BRACKETS_REGEX, "")
         text = text.replace(MULTI_SPACE_REGEX, " ")
-        return text.trim(' ', '-', '_', '.')
+        return text.trim(' ', '-', '–', '—', '−', '_', '.')
+    }
+
+    /**
+     * Separa una stringa nel formato "Artista - Canzone" (supportando trattini ASCII, en-dash, em-dash e minus),
+     * preservando eventuali trattini interni ai nomi (es. "Jay-Z", "Ne-Yo", "blink-182").
+     */
+    fun splitArtistAndTitle(input: String, allowAsymmetric: Boolean = false): Pair<String, String>? {
+        val cleaned = cleanRawString(input)
+        if (cleaned.isBlank()) return null
+
+        val match = ARTIST_TITLE_SEPARATOR_REGEX.find(cleaned)
+            ?: (if (allowAsymmetric) ASYMMETRIC_SEPARATOR_REGEX.find(cleaned) else null)
+            ?: return null
+
+        val left = cleaned.substring(0, match.range.first).trim(' ', '-', '–', '—', '−', '_')
+        val right = cleaned.substring(match.range.last + 1).trim(' ', '-', '–', '—', '−', '_')
+        if (left.isBlank() || right.isBlank()) return null
+        return Pair(left, right)
     }
 
     /**
@@ -93,28 +127,23 @@ object QuerySanitizer {
         text = text.replace(ALBUM_NORMALIZATION_REGEX, "")
         text = text.replace(EMPTY_BRACKETS_REGEX, "")
         text = text.replace(MULTI_SPACE_REGEX, " ")
-        return text.trim(' ', '-', '_', '.')
+        return text.trim(' ', '-', '–', '—', '−', '_', '.')
     }
 
     /**
      * Estrae artista e titolo da un nome file (displayName).
-     * Se è presente un delimitatore " - " separa artista e titolo.
+     * Se è presente un delimitatore " - " (o trattini tipografici equivalenti) separa artista e titolo.
      */
     fun cleanFileName(displayName: String): CleanQuery {
         val cleaned = cleanRawString(displayName)
 
-        // Verifichiamo la presenza del pattern standard "Artista - Titolo"
-        val dashIndex = cleaned.indexOf(" - ")
-        if (dashIndex > 0 && dashIndex < cleaned.length - 3) {
-            val artistPart = cleaned.substring(0, dashIndex).trim(' ', '-', '_')
-            val titlePart = cleaned.substring(dashIndex + 3).trim(' ', '-', '_')
-            if (artistPart.isNotBlank() && titlePart.isNotBlank()) {
-                return CleanQuery(
-                    artist = artistPart,
-                    title = titlePart,
-                    rawCleaned = cleaned
-                )
-            }
+        val split = splitArtistAndTitle(cleaned, allowAsymmetric = true)
+        if (split != null) {
+            return CleanQuery(
+                artist = split.first,
+                title = split.second,
+                rawCleaned = cleaned
+            )
         }
 
         return CleanQuery(
@@ -211,8 +240,8 @@ object QuerySanitizer {
      */
     fun artistsMatch(artistA: String, artistB: String): Boolean {
         if (artistA.isBlank() || artistB.isBlank()) return false
-        val simpA = simplifyForComparison(artistA)
-        val simpB = simplifyForComparison(artistB)
+        val simpA = simplifyForComparison(artistA.replace(TOPIC_CHANNEL_SUFFIX_REGEX, ""))
+        val simpB = simplifyForComparison(artistB.replace(TOPIC_CHANNEL_SUFFIX_REGEX, ""))
         if (simpA.isNotBlank() && simpA == simpB) return true
 
         val tokensA = extractArtistTokens(artistA)
@@ -221,13 +250,19 @@ object QuerySanitizer {
 
         return tokensA.any { a ->
             tokensB.any { b ->
-                a == b || (min(a.length, b.length) >= 5 && (a.startsWith("$b ") || b.startsWith("$a ")))
+                val aNoThe = a.removePrefix("the ").takeIf { it.isNotBlank() && a.startsWith("the ") } ?: a
+                val bNoThe = b.removePrefix("the ").takeIf { it.isNotBlank() && b.startsWith("the ") } ?: b
+                a == b ||
+                    aNoThe == bNoThe ||
+                    (min(a.length, b.length) >= 3 && (a.startsWith("$b ") || b.startsWith("$a "))) ||
+                    (min(aNoThe.length, bNoThe.length) >= 3 && (aNoThe.startsWith("$bNoThe ") || bNoThe.startsWith("$aNoThe ")))
             }
         }
     }
 
     private fun extractArtistTokens(artist: String): List<String> {
-        val withoutFeatParens = artist.replace(Regex("""[\(\[]\s*(feat\.?|ft\.?|featuring|with)\s+""", RegexOption.IGNORE_CASE), ", ")
+        val withoutTopic = artist.replace(TOPIC_CHANNEL_SUFFIX_REGEX, "")
+        val withoutFeatParens = withoutTopic.replace(Regex("""[\(\[]\s*(feat\.?|ft\.?|featuring|with)\s+""", RegexOption.IGNORE_CASE), ", ")
             .replace(")", "")
             .replace("]", "")
         return withoutFeatParens.split(ARTIST_SPLIT_REGEX)
@@ -238,27 +273,55 @@ object QuerySanitizer {
     /**
      * Determina se il titolo locale di una traccia è assente, generico ("Sconosciuto", "Track 01")
      * oppure "sporco" (contiene estensioni file, prefisso numerico da filename, tag "Official Video", "320kbps",
-     * oppure il pattern grezzo "Artista - Titolo" non separato).
+     * oppure il pattern grezzo "Artista - Titolo" o "Titolo - Artista" non separato).
      * Se restituisce `false`, il titolo locale è già pulito e attendibile.
      */
-    fun isTitleUnknownOrDirty(title: String, displayName: String = "", artist: String = ""): Boolean {
+    fun isTitleUnknownOrDirty(
+        title: String,
+        displayName: String = "",
+        artist: String = "",
+        albumArtist: String = ""
+    ): Boolean {
         val trimmed = title.trim()
         if (trimmed.isBlank()) return true
         if (UNKNOWN_TITLE_REGEX.matches(trimmed)) return true
         if (AUDIO_EXTENSIONS_REGEX.containsMatchIn(trimmed)) return true
         if (LEADING_TRACK_NUMBER_REGEX.containsMatchIn(trimmed)) return true
         if (NOISE_TAGS_REGEX.containsMatchIn(trimmed)) return true
+        if (TRAILING_DASH_NOISE_REGEX.containsMatchIn(trimmed)) return true
         if (QUALITY_AND_BITRATE_REGEX.containsMatchIn(trimmed)) return true
 
-        // Se il titolo contiene " - " e la prima parte coincide con l'artista, è un filename non separato ("Artista - Titolo")
-        val dashIdx = trimmed.indexOf(" - ")
-        if (dashIdx > 0) {
-            val leftPart = trimmed.substring(0, dashIdx).trim()
-            if (artist.isNotBlank() && !isArtistUnknownOrDirty(artist) && artistsMatch(leftPart, artist)) {
+        val symmetricSplit = splitArtistAndTitle(trimmed, allowAsymmetric = false)
+        val asymmetricSplit = symmetricSplit ?: splitArtistAndTitle(trimmed, allowAsymmetric = true)
+        if (asymmetricSplit != null) {
+            val (leftPart, rightPart) = asymmetricSplit
+            val hasKnownArtist = !isArtistUnknownOrDirty(artist)
+            val hasKnownAlbumArtist = !isArtistUnknownOrDirty(albumArtist)
+
+            // 1. Il prefisso prima del trattino coincide con l'artista o con l'albumArtist ("Nome Artista - Canzone")
+            if ((hasKnownArtist && artistsMatch(leftPart, artist)) ||
+                (hasKnownAlbumArtist && artistsMatch(leftPart, albumArtist))
+            ) {
                 return true
             }
+
+            // 2. Formato inverso sicuro ("Canzone - Nome Artista") con artista noto a destra
+            val isVersionSuffix = TITLE_VERSION_RIGHT_PART_REGEX.matches(rightPart)
+            if (!isVersionSuffix &&
+                ((hasKnownArtist && artistsMatch(rightPart, artist)) ||
+                    (hasKnownAlbumArtist && artistsMatch(rightPart, albumArtist)))
+            ) {
+                return true
+            }
+
+            // 3. Artista assente/sconosciuto: un separatore simmetrico (" - ", " – ", " — ") non di versione indica "Artista - Canzone"
+            if (!hasKnownArtist && !hasKnownAlbumArtist && symmetricSplit != null && !isVersionSuffix) {
+                return true
+            }
+
+            // 4. Il titolo coincide col nome file ripulito (es. tag TITLE copiato dal filename) e non è un suffisso di versione
             val displayNoExt = displayName.replace(AUDIO_EXTENSIONS_REGEX, "").trim()
-            if (displayNoExt.isNotBlank() && trimmed.equals(displayNoExt, ignoreCase = true)) {
+            if (!isVersionSuffix && displayNoExt.isNotBlank() && trimmed.equals(displayNoExt, ignoreCase = true)) {
                 return true
             }
         }
@@ -278,6 +341,13 @@ object QuerySanitizer {
     }
 
     /**
+     * Pulisce il nome artista rimuovendo eventuali suffissi di canale (es. "- Topic") e rumore.
+     */
+    fun cleanArtistString(artist: String): String {
+        return cleanRawString(artist.replace(TOPIC_CHANNEL_SUFFIX_REGEX, ""))
+    }
+
+    /**
      * Verifica se l'artista locale contiene già collaboratori/featuring validi (es. "Marracash feat. Guè" o "Salmo & Noyz Narcos")
      * compatibili con l'artista principale restituito da Deezer (che spesso espone solo il primo artista).
      */
@@ -294,35 +364,79 @@ object QuerySanitizer {
      */
     fun extractPrimaryArtistForSearch(artist: String): String {
         if (isArtistUnknownOrDirty(artist)) return ""
-        val withoutParens = artist.replace(FEAT_SUFFIX_REGEX, "").trim()
+        val withoutTopic = artist.replace(TOPIC_CHANNEL_SUFFIX_REGEX, "").trim()
+        val withoutParens = withoutTopic.replace(FEAT_SUFFIX_REGEX, "").trim()
         val firstToken = withoutParens.split(ARTIST_SPLIT_REGEX).firstOrNull()?.trim().orEmpty()
         return cleanRawString(firstToken.ifBlank { withoutParens })
     }
 
     /**
+     * Estrae un candidato alternativo (Artista, Canzone) da una stringa nel formato "Nome Artista - Canzone",
+     * escludendo suffissi di versione/parte (es. "- Remix", "- Part I", "- Acoustic").
+     */
+    fun extractFallbackArtistAndTitle(title: String): Pair<String, String>? {
+        val split = splitArtistAndTitle(title, allowAsymmetric = true) ?: return null
+        val (leftPart, rightPart) = split
+        if (TITLE_VERSION_RIGHT_PART_REGEX.matches(rightPart)) return null
+        val cleanTitle = stripFeaturingAndEdition(rightPart).ifBlank { rightPart }
+        val cleanArtist = cleanArtistString(leftPart).ifBlank { leftPart }
+        if (cleanTitle.isBlank() || cleanArtist.isBlank()) return null
+        return Pair(cleanArtist, cleanTitle)
+    }
+
+    /**
+     * Estrae un candidato alternativo (Artista, Canzone) nell'ipotesi inversa "Canzone - Nome Artista".
+     */
+    fun extractReversedTitleAndArtist(title: String): Pair<String, String>? {
+        val split = splitArtistAndTitle(title, allowAsymmetric = false) ?: return null
+        val (leftPart, rightPart) = split
+        if (TITLE_VERSION_RIGHT_PART_REGEX.matches(rightPart)) return null
+        val cleanTitle = stripFeaturingAndEdition(leftPart).ifBlank { leftPart }
+        val cleanArtist = cleanArtistString(rightPart).ifBlank { rightPart }
+        if (cleanTitle.isBlank() || cleanArtist.isBlank()) return null
+        return Pair(cleanArtist, cleanTitle)
+    }
+
+    /**
      * Restituisce la coppia (Artista, Titolo) migliore da usare per la ricerca online.
-     * Se i tag ID3 correnti sono assenti, generici o contengono "Artista - Titolo",
+     * Se i tag ID3 correnti sono assenti, generici o contengono "Artista - Titolo" (o "Titolo - Artista"),
      * analizza ed estrae i termini puliti.
      */
     fun getEffectiveSearchTerms(track: AudioTrack): Pair<String, String> {
-        val isTitleDirty = isTitleUnknownOrDirty(track.title, track.displayName, track.artist)
+        val isTitleDirty = isTitleUnknownOrDirty(track.title, track.displayName, track.artist, track.albumArtist)
         val isArtistDirty = isArtistUnknownOrDirty(track.artist)
 
         if (isTitleDirty || isArtistDirty) {
             val fileNameClean = cleanFileName(track.displayName.ifBlank { track.title })
-            val titleFromTagClean = cleanFileName(track.title)
+            val titleSplit = splitArtistAndTitle(track.title, allowAsymmetric = true)
+
+            val isReversedFormat = titleSplit != null &&
+                !TITLE_VERSION_RIGHT_PART_REGEX.matches(titleSplit.second) &&
+                ((!isArtistDirty && !artistsMatch(titleSplit.first, track.artist) && artistsMatch(titleSplit.second, track.artist)) ||
+                    (!isArtistUnknownOrDirty(track.albumArtist) && !artistsMatch(titleSplit.first, track.albumArtist) && artistsMatch(titleSplit.second, track.albumArtist)))
+
+            val parsedFromTitleArtist = when {
+                titleSplit == null -> null
+                isReversedFormat -> cleanArtistString(titleSplit.second)
+                else -> cleanArtistString(titleSplit.first)
+            }
+            val parsedFromTitleSong = when {
+                titleSplit == null -> ""
+                isReversedFormat -> titleSplit.first
+                else -> titleSplit.second
+            }
 
             val effectiveArtist = when {
-                !isArtistDirty -> cleanRawString(track.artist)
-                titleFromTagClean.artist != null -> titleFromTagClean.artist
-                fileNameClean.artist != null -> fileNameClean.artist
-                !isArtistUnknownOrDirty(track.albumArtist) -> cleanRawString(track.albumArtist)
+                !isArtistDirty -> cleanArtistString(track.artist)
+                !parsedFromTitleArtist.isNullOrBlank() -> parsedFromTitleArtist
+                !fileNameClean.artist.isNullOrBlank() -> cleanArtistString(fileNameClean.artist)
+                !isArtistUnknownOrDirty(track.albumArtist) -> cleanArtistString(track.albumArtist)
                 else -> ""
             }
             val effectiveTitle = when {
                 !isTitleDirty -> stripFeaturingAndEdition(track.title).ifBlank { cleanRawString(track.title) }
-                titleFromTagClean.artist != null && titleFromTagClean.title.isNotBlank() ->
-                    stripFeaturingAndEdition(titleFromTagClean.title).ifBlank { titleFromTagClean.title }
+                titleSplit != null && parsedFromTitleSong.isNotBlank() ->
+                    stripFeaturingAndEdition(parsedFromTitleSong).ifBlank { parsedFromTitleSong }
                 !UNKNOWN_TITLE_REGEX.matches(track.title.trim()) && track.title.isNotBlank() ->
                     stripFeaturingAndEdition(track.title).ifBlank { cleanRawString(track.title) }
                 fileNameClean.title.isNotBlank() ->
@@ -333,6 +447,6 @@ object QuerySanitizer {
         }
 
         val cleanTitle = stripFeaturingAndEdition(track.title).ifBlank { track.title.trim() }
-        return Pair(track.artist.trim(), cleanTitle)
+        return Pair(cleanArtistString(track.artist).ifBlank { track.artist.trim() }, cleanTitle)
     }
 }

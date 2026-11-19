@@ -389,9 +389,9 @@ class PlaylistMilestone3StressChallengeTest {
                     nonFav.any { it.id == FAVORITES_PLAYLIST_ID })
 
                 if (option == SortOption.ALPHABETICAL) {
-                    val names = nonFav.map { it.name.lowercase() }
-                    val expected = if (isAsc) names.sorted() else names.sortedDescending()
-                    assertEquals("Alphabetical ordering mismatch for isAsc=$isAsc", expected, names)
+                    val keys = nonFav.map { alphabeticalSortKey(it.name) }
+                    val expected = if (isAsc) keys.sorted() else keys.sortedDescending()
+                    assertEquals("Alphabetical ordering mismatch for isAsc=$isAsc", expected, keys)
                 }
             }
         }

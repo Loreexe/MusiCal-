@@ -504,11 +504,6 @@ private fun TopEdgeProgressBar(
     showThumb: Boolean = true
 ) {
     val safeDuration = durationMs.coerceAtLeast(1L).toFloat()
-    val progressFraction = if (isSeeking) {
-        seekFraction
-    } else {
-        (currentPositionProvider().toFloat() / safeDuration).coerceIn(0f, 1f)
-    }
 
     val interactionFraction by animateFloatAsState(
         targetValue = if (isSeeking) 1f else 0f,
@@ -569,6 +564,11 @@ private fun TopEdgeProgressBar(
                 .fillMaxWidth()
                 .height(16.dp)
         ) {
+            val progressFraction = if (isSeeking) {
+                seekFraction
+            } else {
+                (currentPositionProvider().toFloat() / safeDuration).coerceIn(0f, 1f)
+            }
             val width = size.width
             val h = trackHeight.toPx()
             val radius = CornerRadius(h / 2f, h / 2f)

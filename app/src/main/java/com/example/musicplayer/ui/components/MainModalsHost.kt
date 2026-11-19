@@ -14,6 +14,7 @@ import com.example.musicplayer.data.Album
 import com.example.musicplayer.data.AudioTrack
 import com.example.musicplayer.data.PlaybackContext
 import com.example.musicplayer.data.Playlist
+import com.example.musicplayer.data.extractMainArtist
 import com.example.musicplayer.data.matchesArtist
 import com.example.musicplayer.ui.tagger.MetadataEnricherSheet
 import com.example.musicplayer.ui.MusicViewModel
@@ -126,9 +127,35 @@ fun MainModalsHost(
     }
 
     // 2. ModalBottomSheet Player a tutto schermo (Full Screen Player)
-    if (showFullScreenPlayer && currentTrack != null) {
+    val activeTrackForPlayer = currentTrack
+    if (showFullScreenPlayer && activeTrackForPlayer != null) {
+        val currentTrackArtist = activeTrackForPlayer.artist.trim()
+        val currentArtistTracks = remember(currentTrackArtist, tracks, activeTrackForPlayer) {
+            if (currentTrackArtist.isBlank()) {
+                emptyList()
+            } else {
+                val mainName = extractMainArtist(currentTrackArtist).ifBlank { currentTrackArtist }
+                tracks.filter { it.matchesArtist(mainName) }
+                    .map { it.title }
+                    .filter { it.isNotBlank() }
+                    .ifEmpty { listOfNotNull(activeTrackForPlayer.title.takeIf { it.isNotBlank() }) }
+                    .distinct()
+            }
+        }
+        val currentArtistAlbums = remember(currentTrackArtist, tracks, albums, activeTrackForPlayer) {
+            if (currentTrackArtist.isBlank()) {
+                emptyList()
+            } else {
+                val mainName = extractMainArtist(currentTrackArtist).ifBlank { currentTrackArtist }
+                (albums.filter { it.matchesArtist(mainName) }.map { it.title } +
+                    tracks.filter { it.matchesArtist(mainName) }.map { it.album })
+                    .filter { it.isNotBlank() }
+                    .ifEmpty { listOfNotNull(activeTrackForPlayer.album.takeIf { it.isNotBlank() }) }
+                    .distinct()
+            }
+        }
         FullScreenPlayerSheet(
-            currentTrack = currentTrack,
+            currentTrack = activeTrackForPlayer,
             isPlaying = isPlaying,
             currentPositionProvider = currentPositionProvider,
             durationMs = durationMs,
@@ -210,7 +237,9 @@ fun MainModalsHost(
                     }
                 }
             },
-            artistInfoRepository = viewModel.artistInfoRepository
+            artistInfoRepository = viewModel.artistInfoRepository,
+            referenceTrackTitles = currentArtistTracks,
+            referenceAlbumTitles = currentArtistAlbums
         )
     }
 

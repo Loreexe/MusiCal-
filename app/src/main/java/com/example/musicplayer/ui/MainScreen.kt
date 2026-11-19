@@ -1,6 +1,7 @@
 package com.example.musicplayer.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -10,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import com.example.musicplayer.ui.tagger.MetadataEnricherSheet
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -500,8 +502,9 @@ fun MainScreen(
         }
     }
 
-    // Gestione tasto indietro
-    BackHandler(enabled = showFullScreenPlayer || selectedArtistForSheet != null || isSearchExpandedInDetail || isSearchExpandedInCompact || searchQuery.isNotBlank() || selectedAlbum != null || selectedPlaylist != null || selectedTabIndex != 0) {
+    // Gestione tasto indietro: quando la musica è attiva sulla schermata radice sposta il task in background
+    // invece di far invocare finish() ad Android e distruggere il MusicViewModel / PlaybackService.
+    BackHandler(enabled = showFullScreenPlayer || selectedArtistForSheet != null || isSearchExpandedInDetail || isSearchExpandedInCompact || searchQuery.isNotBlank() || selectedAlbum != null || selectedPlaylist != null || selectedTabIndex != 0 || isPlaying) {
         when {
             showFullScreenPlayer -> showFullScreenPlayer = false
             selectedArtistForSheet != null -> selectedArtistForSheet = null
@@ -527,6 +530,7 @@ fun MainScreen(
                 isSearchExpandedInDetail = false
             }
             selectedTabIndex != 0 -> coroutineScope.launch { pagerState.animateScrollToPage(0) }
+            isPlaying -> (context as? Activity)?.moveTaskToBack(true)
         }
     }
 
@@ -610,14 +614,20 @@ fun MainScreen(
     }
 
     val nestedScrollConnection = rememberCollapsingScrollConnection(
+        isEnabled = {
+            !isDetailOpen &&
+                activeAlbumForPager == null &&
+                !albumPagerState.isScrollInProgress &&
+                !pagerState.isScrollInProgress
+        },
         onCollapse = {
-            if (!isDetailOpen && !albumPagerState.isScrollInProgress && !pagerState.isScrollInProgress && !isHeaderCompact) {
+            if (!isDetailOpen && activeAlbumForPager == null && !albumPagerState.isScrollInProgress && !pagerState.isScrollInProgress && !isHeaderCompact) {
                 isHeaderCompact = true
             }
         },
         onExpand = {
             // Riespande la parte superiore solo se siamo già in cima alla lista della scheda attiva (e non durante uno swipe orizzontale)
-            if (!isDetailOpen && !albumPagerState.isScrollInProgress && !pagerState.isScrollInProgress && isCurrentTabAtTop) {
+            if (!isDetailOpen && activeAlbumForPager == null && !albumPagerState.isScrollInProgress && !pagerState.isScrollInProgress && isCurrentTabAtTop) {
                 if (isHeaderCompact) {
                     isHeaderCompact = false
                 }
@@ -852,27 +862,42 @@ fun MainScreen(
                         (isDetailOpen && isSearchExpandedInDetail) ||
                         (!isDetailOpen && (!isHeaderCompact || isSearchExpandedInCompact || searchQuery.isNotBlank()))
                     )
-                    val searchBarProgressState = animateFloatAsState(
-                        targetValue = if (isSearchBarVisible) 1f else 0f,
-                        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
-                        label = "SearchBarVisibilityProgress"
-                    )
+                    val isAlbumTransitioningSearchBar = hasPermissions &&
+                        activeAlbumForPager != null &&
+                        !isSearchExpandedInDetail &&
+                        searchQuery.isBlank() &&
+                        selectedPlaylist == null
+
+                    val searchBarProgressAnimatable = remember {
+                        Animatable(if (isSearchBarVisible) 1f else 0f)
+                    }
+
+                    LaunchedEffect(isAlbumTransitioningSearchBar, isSearchBarVisible) {
+                        if (isAlbumTransitioningSearchBar) {
+                            snapshotFlow {
+                                val albumOpenFraction = (albumPagerState.currentPage + albumPagerState.currentPageOffsetFraction).coerceIn(0f, 1f)
+                                val tabsSearchFraction = if (!isHeaderCompact || isSearchExpandedInCompact) 1f else 0f
+                                tabsSearchFraction * (1f - albumOpenFraction)
+                            }.collect { targetFraction ->
+                                searchBarProgressAnimatable.snapTo(targetFraction)
+                            }
+                        } else {
+                            val target = if (isSearchBarVisible) 1f else 0f
+                            if (kotlin.math.abs(searchBarProgressAnimatable.value - target) > 0.001f) {
+                                searchBarProgressAnimatable.animateTo(
+                                    targetValue = target,
+                                    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
+                                )
+                            }
+                        }
+                    }
 
                     if (hasPermissions) {
                         val searchInteractionSource = remember { MutableInteractionSource() }
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .collapsibleVerticalSection {
-                                    val baseProgress = searchBarProgressState.value
-                                    if (activeAlbumForPager != null && !isSearchExpandedInDetail && searchQuery.isBlank() && selectedPlaylist == null) {
-                                        val albumOpenFraction = (albumPagerState.currentPage + albumPagerState.currentPageOffsetFraction).coerceIn(0f, 1f)
-                                        val tabsSearchFraction = if (!isHeaderCompact || isSearchExpandedInCompact) 1f else 0f
-                                        tabsSearchFraction * (1f - albumOpenFraction)
-                                    } else {
-                                        baseProgress
-                                    }
-                                }
+                                .collapsibleVerticalSection { searchBarProgressAnimatable.value }
                         ) {
                             BasicTextField(
                                 value = searchQuery,
@@ -1014,7 +1039,6 @@ fun MainScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .nestedScroll(nestedScrollConnection)
                 .padding(
                     start = innerPadding.calculateStartPadding(LocalLayoutDirection.current),
                     top = innerPadding.calculateTopPadding(),
@@ -1195,7 +1219,11 @@ fun MainScreen(
                                 ) { navPage ->
                                     when (navPage) {
                                         0 -> {
-                                            Column(modifier = Modifier.fillMaxSize()) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .nestedScroll(nestedScrollConnection)
+                                            ) {
                                                 val tabItems = remember {
                                                     listOf(
                                                         Triple(0, R.string.tab_tracks, Icons.Default.MusicNote),

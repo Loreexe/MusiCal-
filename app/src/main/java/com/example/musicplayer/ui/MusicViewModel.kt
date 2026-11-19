@@ -1,8 +1,10 @@
 package com.example.musicplayer.ui
 
 import android.app.Application
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.LocaleManager
 import android.content.ComponentName
+import android.content.Intent
 import android.content.IntentSender
 import android.net.Uri
 import android.os.LocaleList
@@ -165,7 +167,13 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         getCurrentTrack = { _currentTrack.value },
         setCurrentTrack = { _currentTrack.value = it },
         setCurrentPositionMs = { _currentPositionMs.value = it },
-        setIsPlaying = { _isPlaying.value = it },
+        setIsPlaying = { playing ->
+            val becamePlaying = playing && !_isPlaying.value
+            _isPlaying.value = playing
+            if (becamePlaying) {
+                ensurePlaybackServiceForeground()
+            }
+        },
         startProgressTicker = { startProgressTicker() },
         updateDuration = { updateDuration() },
         onRecordTrackPlayed = { trackId -> libraryCoordinator.recordTrackPlayed(trackId) },
@@ -219,6 +227,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _isPlaying.value = isPlaying
             if (isPlaying) {
+                ensurePlaybackServiceForeground()
                 if (!queueCoordinator.hasRecordedPlayForRestoredTrack) {
                     queueCoordinator.hasRecordedPlayForRestoredTrack = true
                     _currentTrack.value?.let { current ->
@@ -430,12 +439,32 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             if (controller.playbackState == Player.STATE_IDLE && tracks.value.isNotEmpty()) {
                 val trackToPlay = _currentTrack.value ?: tracks.value.first()
+                ensurePlaybackServiceForeground()
                 queueCoordinator.playTrack(trackToPlay)
             } else {
+                ensurePlaybackServiceForeground()
                 controller.play()
                 _isPlaying.value = true
                 startProgressTicker()
             }
+        }
+    }
+
+    /**
+     * Promuove esplicitamente PlaybackService a Started Foreground Service quando la riproduzione
+     * parte dall'app in primo piano, prevenendo l'uccisione del processo all'uscita dalla UI.
+     */
+    private fun ensurePlaybackServiceForeground() {
+        val app = getApplication<Application>()
+        val serviceIntent = Intent(app, PlaybackService::class.java).apply {
+            action = PlaybackService.ACTION_START_FOREGROUND
+        }
+        try {
+            ContextCompat.startForegroundService(app, serviceIntent)
+        } catch (_: ForegroundServiceStartNotAllowedException) {
+            // Il sistema può negare startForegroundService se invocato mentre l'app è in background:
+            // Media3 gestirà comunque il collegamento tramite sessione quando consentito.
+        } catch (_: Exception) {
         }
     }
 
@@ -474,7 +503,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     lastFmCoordinator.checkAndTriggerScrobble(pos, effectiveDur)
                 }
-                delay(250L)
+                delay(50L)
             }
         }
     }

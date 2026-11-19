@@ -1,7 +1,13 @@
 package com.example.musicplayer.ui
 
+import com.example.musicplayer.data.Album
 import com.example.musicplayer.data.AudioTrack
+import com.example.musicplayer.data.FAVORITES_PLAYLIST_ID
+import com.example.musicplayer.data.FAVORITES_PLAYLIST_NAME
+import com.example.musicplayer.data.Playlist
 import com.example.musicplayer.data.SortOption
+import com.example.musicplayer.data.sortAlbums
+import com.example.musicplayer.data.sortPlaylists
 import com.example.musicplayer.data.sortTracks
 import com.example.musicplayer.ui.components.extractAlphabeticalHeader
 import android.net.Uri
@@ -165,5 +171,57 @@ class FastScrollbarTest {
 
         // Con 1 solo elemento -> NON interattiva
         org.junit.Assert.assertFalse(isInteractive(isVisible = true, thumbHeightPx = 80f, totalItems = 1))
+    }
+
+    @Test
+    fun testAlphabeticalScrollbarSequence_noOutOfOrderQuotesParenthesesOrAccents() {
+        val tracks = listOf(
+            track(1, "\"Heroes\""),
+            track(2, "(Jump)"),
+            track(3, "1984"),
+            track(4, "Apple"),
+            track(5, "Édith Piaf"),
+            track(6, "«Nel blu dipinto di blu»"),
+            track(7, "Zebra")
+        )
+
+        // Crescente (A-Z): # prima delle lettere, H e J esattamente in ordine alfabetico tra E ed N
+        val asc = tracks.sortTracks(SortOption.ALPHABETICAL, isAscending = true)
+        val ascHeaders = asc.map { extractAlphabeticalHeader(it.title) }
+        assertEquals(listOf("#", "A", "E", "H", "J", "N", "Z"), ascHeaders)
+
+        // Decrescente (Z-A): esattamente speculare da Z ad A, poi # alla fine
+        val desc = tracks.sortTracks(SortOption.ALPHABETICAL, isAscending = false)
+        val descHeaders = desc.map { extractAlphabeticalHeader(it.title) }
+        assertEquals(listOf("Z", "N", "J", "H", "E", "A", "#"), descHeaders)
+
+        // Verifica coerenza anche su Album e Playlist
+        val albums = tracks.map { t ->
+            Album(id = t.id, title = t.title, artist = "Artist", albumArtUri = dummyUri, tracks = listOf(t))
+        }
+        assertEquals(
+            listOf("#", "A", "E", "H", "J", "N", "Z"),
+            albums.sortAlbums(SortOption.ALPHABETICAL, isAscending = true).map { extractAlphabeticalHeader(it.title) }
+        )
+        assertEquals(
+            listOf("Z", "N", "J", "H", "E", "A", "#"),
+            albums.sortAlbums(SortOption.ALPHABETICAL, isAscending = false).map { extractAlphabeticalHeader(it.title) }
+        )
+
+        val playlists = listOf(
+            Playlist(FAVORITES_PLAYLIST_ID, FAVORITES_PLAYLIST_NAME),
+            Playlist("p1", "\"Heroes\""),
+            Playlist("p2", "(Jump)"),
+            Playlist("p3", "1984"),
+            Playlist("p4", "Zebra")
+        )
+        assertEquals(
+            listOf("B", "#", "H", "J", "Z"),
+            playlists.sortPlaylists(SortOption.ALPHABETICAL, isAscending = true).map { extractAlphabeticalHeader(it.name) }
+        )
+        assertEquals(
+            listOf("B", "Z", "J", "H", "#"),
+            playlists.sortPlaylists(SortOption.ALPHABETICAL, isAscending = false).map { extractAlphabeticalHeader(it.name) }
+        )
     }
 }

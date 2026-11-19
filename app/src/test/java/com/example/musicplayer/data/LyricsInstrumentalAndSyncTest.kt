@@ -91,4 +91,72 @@ class LyricsInstrumentalAndSyncTest {
         val instrumentalFileNameTrack = baseTrack.copy(displayName = "track_01 (Instrumental).mp3")
         assertTrue(instrumentalFileNameTrack.isInstrumental())
     }
+
+    @Test
+    fun parseLyrics_multipleLeadingTimestamps_expandsAndSortsLines() {
+        val raw = """
+            [00:10.00][00:30.00] Chorus line
+            [00:20.00] Verse line
+        """.trimIndent()
+        val parsed = repository.parseLyrics(5L, raw)
+
+        assertTrue(parsed.isSynced)
+        assertEquals(3, parsed.lines.size)
+        assertEquals(10000L, parsed.lines[0].timeMs)
+        assertEquals("Chorus line", parsed.lines[0].text)
+        assertEquals(20000L, parsed.lines[1].timeMs)
+        assertEquals("Verse line", parsed.lines[1].text)
+        assertEquals(30000L, parsed.lines[2].timeMs)
+        assertEquals("Chorus line", parsed.lines[2].text)
+    }
+
+    @Test
+    fun findActiveLyricIndex_appliesLeadTimeAndBinarySearchAccurately() {
+        val lines = listOf(
+            LyricLine(2000L, "Line 0"),
+            LyricLine(5000L, "Line 1"),
+            LyricLine(8500L, "Line 2"),
+            LyricLine(-1L, "Unsynced trailing note")
+        )
+
+        // Prima del primo timestamp resta sulla riga 0
+        assertEquals(
+            0,
+            com.example.musicplayer.ui.components.findActiveLyricIndex(
+                lines = lines,
+                isSynced = true,
+                currentPositionMs = 500L
+            )
+        )
+
+        // A 4700ms, con anticipo di 350ms (effective = 5050ms >= 5000ms), attiva in anticipo la riga 1
+        assertEquals(
+            1,
+            com.example.musicplayer.ui.components.findActiveLyricIndex(
+                lines = lines,
+                isSynced = true,
+                currentPositionMs = 4700L
+            )
+        )
+
+        // A 4600ms (effective = 4950ms < 5000ms), rimane sulla riga 0
+        assertEquals(
+            0,
+            com.example.musicplayer.ui.components.findActiveLyricIndex(
+                lines = lines,
+                isSynced = true,
+                currentPositionMs = 4600L
+            )
+        )
+
+        // A 8200ms (effective = 8550ms >= 8500ms), passa alla riga 2 ignorando la riga con timeMs = -1
+        assertEquals(
+            2,
+            com.example.musicplayer.ui.components.findActiveLyricIndex(
+                lines = lines,
+                isSynced = true,
+                currentPositionMs = 8200L
+            )
+        )
+    }
 }
