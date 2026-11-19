@@ -1078,7 +1078,12 @@ private fun ReviewAlbumContent(
         mutableStateOf(state.editedAlbumTitle ?: firstEnriched?.album ?: album.title)
     }
     var editedAlbumArtist by remember(state.editedAlbumArtist, firstEnriched?.albumArtist) {
-        mutableStateOf(state.editedAlbumArtist ?: firstEnriched?.albumArtist ?: album.artist)
+        val rawDefaultArtist = state.editedAlbumArtist ?: firstEnriched?.albumArtist ?: album.artist
+        val primaryDefault = QuerySanitizer.extractPrimaryAlbumArtist(rawDefaultArtist)
+            .ifBlank { rawDefaultArtist }
+        mutableStateOf(
+            if (state.editedAlbumArtist != null) state.editedAlbumArtist else primaryDefault
+        )
     }
     var editedAlbumYear by remember(state.editedAlbumYear, firstEnriched?.releaseYear) {
         mutableStateOf(state.editedAlbumYear ?: firstEnriched?.releaseYear?.toString().orEmpty())

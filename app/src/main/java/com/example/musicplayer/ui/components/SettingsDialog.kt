@@ -6,6 +6,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
@@ -43,7 +44,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
@@ -57,7 +57,11 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Upload
+import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.DesktopWindows
+import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -65,8 +69,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -108,6 +110,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.musicplayer.R
@@ -346,118 +349,52 @@ fun SettingsDialog(
                     icon = Icons.Default.Language,
                     title = stringResource(R.string.settings_section_language)
                 )
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = stringResource(R.string.settings_section_language),
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                SettingsTileSelectorCard(
+                    selectedOption = appLanguage,
+                    onOptionSelected = { viewModel.setAppLanguage(it) },
+                    options = listOf(
+                        TileSelectorOption(
+                            value = AppLanguage.ITALIAN,
+                            label = stringResource(R.string.lang_short_it)
+                        ),
+                        TileSelectorOption(
+                            value = AppLanguage.ENGLISH,
+                            label = stringResource(R.string.lang_short_en)
+                        ),
+                        TileSelectorOption(
+                            value = AppLanguage.SYSTEM,
+                            label = stringResource(R.string.lang_short_system),
+                            icon = Icons.Outlined.DesktopWindows
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = stringResource(R.string.settings_language_desc),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            AppLanguage.entries.forEach { lang ->
-                                val selected = appLanguage == lang
-                                val labelText = when (lang) {
-                                    AppLanguage.SYSTEM -> stringResource(R.string.lang_system)
-                                    AppLanguage.ITALIAN -> stringResource(R.string.lang_italian)
-                                    AppLanguage.ENGLISH -> stringResource(R.string.lang_english)
-                                }
-                                FilterChip(
-                                    selected = selected,
-                                    onClick = { viewModel.setAppLanguage(lang) },
-                                    label = {
-                                        Text(
-                                            text = labelText,
-                                            modifier = Modifier.fillMaxWidth(),
-                                            textAlign = TextAlign.Center,
-                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
-                                        )
-                                    },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                    ),
-                                    border = FilterChipDefaults.filterChipBorder(
-                                        enabled = true,
-                                        selected = selected,
-                                        borderColor = MaterialTheme.colorScheme.outline,
-                                        selectedBorderColor = MaterialTheme.colorScheme.primary,
-                                        borderWidth = 1.dp,
-                                        selectedBorderWidth = 1.5.dp
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                        }
-                    }
-                }
+                    )
+                )
 
                 // 2. Aspetto & Tema
                 SettingsSectionHeader(
-                    icon = Icons.Default.ColorLens,
-                    title = stringResource(R.string.settings_section_appearance)
+                    icon = Icons.Default.Tune,
+                    title = stringResource(R.string.settings_appearance_short)
                 )
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = stringResource(R.string.settings_theme_mode),
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                SettingsTileSelectorCard(
+                    selectedOption = themeMode,
+                    onOptionSelected = { viewModel.setThemeMode(it) },
+                    options = listOf(
+                        TileSelectorOption(
+                            value = ThemeMode.DARK,
+                            label = stringResource(R.string.theme_short_dark),
+                            icon = Icons.Outlined.DarkMode
+                        ),
+                        TileSelectorOption(
+                            value = ThemeMode.LIGHT,
+                            label = stringResource(R.string.theme_short_light),
+                            icon = Icons.Outlined.LightMode
+                        ),
+                        TileSelectorOption(
+                            value = ThemeMode.SYSTEM,
+                            label = stringResource(R.string.theme_short_system),
+                            icon = Icons.Outlined.DesktopWindows
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            ThemeMode.entries.forEach { mode ->
-                                val selected = themeMode == mode
-                                val labelText = when (mode) {
-                                    ThemeMode.SYSTEM -> stringResource(R.string.theme_system)
-                                    ThemeMode.LIGHT -> stringResource(R.string.theme_light)
-                                    ThemeMode.DARK -> stringResource(R.string.theme_dark)
-                                }
-                                FilterChip(
-                                    selected = selected,
-                                    onClick = { viewModel.setThemeMode(mode) },
-                                    label = {
-                                        Text(
-                                            text = labelText,
-                                            modifier = Modifier.fillMaxWidth(),
-                                            textAlign = TextAlign.Center,
-                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
-                                        )
-                                    },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                    ),
-                                    border = FilterChipDefaults.filterChipBorder(
-                                        enabled = true,
-                                        selected = selected,
-                                        borderColor = MaterialTheme.colorScheme.outline,
-                                        selectedBorderColor = MaterialTheme.colorScheme.primary,
-                                        borderWidth = 1.dp,
-                                        selectedBorderWidth = 1.5.dp
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                        }
-                    }
-                }
+                    )
+                )
 
                 // 3. Riproduzione & Audio
                 SettingsSectionHeader(
@@ -1274,20 +1211,30 @@ fun SettingsDialog(
         }
 
         if (showBatteryGuideDialog) {
+            val guideSteps = listOf(
+                R.string.settings_battery_guide_step_1,
+                R.string.settings_battery_guide_step_2,
+                R.string.settings_battery_guide_step_3,
+                R.string.settings_battery_guide_step_4
+            )
             AlertDialog(
                 onDismissRequest = { showBatteryGuideDialog = false },
-                icon = {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_info_outline),
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                },
                 title = {
-                    Text(
-                        text = stringResource(R.string.settings_battery_guide_title),
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_info_outline),
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = stringResource(R.string.settings_battery_guide_title),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 },
                 text = {
                     Column(
@@ -1298,25 +1245,13 @@ fun SettingsDialog(
                             text = stringResource(R.string.settings_battery_guide_intro),
                             style = MaterialTheme.typography.bodyMedium
                         )
-                        Text(
-                            text = stringResource(R.string.settings_battery_guide_step_1),
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        Text(
-                            text = stringResource(R.string.settings_battery_guide_step_2),
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        Text(
-                            text = stringResource(R.string.settings_battery_guide_step_3),
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = stringResource(R.string.settings_battery_guide_step_4),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        guideSteps.forEach { stepResId ->
+                            Text(
+                                text = stringResource(stepResId),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 },
                 dismissButton = {
@@ -1338,6 +1273,108 @@ fun SettingsDialog(
         }
     }
 }
+}
+
+private data class TileSelectorOption<T>(
+    val value: T,
+    val label: String,
+    val icon: ImageVector? = null
+)
+
+@Composable
+private fun <T> SettingsTileSelectorCard(
+    options: List<TileSelectorOption<T>>,
+    selectedOption: T,
+    onOptionSelected: (T) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            options.forEach { option ->
+                val selected = option.value == selectedOption
+                val tileContainerColor by animateColorAsState(
+                    targetValue = if (selected) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                    } else {
+                        MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                    },
+                    animationSpec = tween(durationMillis = 180),
+                    label = "settingsTileContainer"
+                )
+                val tileBorderColor by animateColorAsState(
+                    targetValue = if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                    },
+                    animationSpec = tween(durationMillis = 180),
+                    label = "settingsTileBorder"
+                )
+                val tileContentColor by animateColorAsState(
+                    targetValue = if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    animationSpec = tween(durationMillis = 180),
+                    label = "settingsTileContent"
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = tileContainerColor,
+                    border = BorderStroke(
+                        width = if (selected) 1.5.dp else 1.dp,
+                        color = tileBorderColor
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(78.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable { onOptionSelected(option.value) }
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        if (option.icon != null) {
+                            Icon(
+                                imageVector = option.icon,
+                                contentDescription = null,
+                                tint = tileContentColor,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                        }
+                        Text(
+                            text = option.label,
+                            style = if (option.icon == null) {
+                                MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp)
+                            } else {
+                                MaterialTheme.typography.labelLarge
+                            },
+                            fontWeight = if (selected || option.icon == null) FontWeight.SemiBold else FontWeight.Medium,
+                            color = tileContentColor,
+                            maxLines = 1,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

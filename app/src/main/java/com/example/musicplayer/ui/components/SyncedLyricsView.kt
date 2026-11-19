@@ -5,6 +5,9 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -39,10 +42,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.musicplayer.R
@@ -57,6 +66,83 @@ import kotlin.math.abs
  * e illuminato all'attacco vocale.
  */
 internal const val AUTO_SYNC_LEAD_MS = 350L
+
+/**
+ * Connessione NestedScroll che assorbe integralmente i delta verticali residui (overscroll/fling)
+ * all'interno dell'area dei testi, impedendo che lo scorrimento in cima, in fondo o su testi brevi
+ * attivi lo swipe-down della ModalBottomSheet o lo scroll del contenitore padre.
+ */
+internal object LyricsVerticalScrollBlocker : NestedScrollConnection {
+    override fun onPostScroll(
+        consumed: Offset,
+        available: Offset,
+        source: NestedScrollSource
+    ): Offset = Offset(x = 0f, y = available.y)
+
+    override suspend fun onPostFling(
+        consumed: Velocity,
+        available: Velocity
+    ): Velocity = Velocity(x = 0f, y = available.y)
+}
+
+/**
+ * Contenitore centrato per gli stati non scorrevoli dei testi (brano strumentale o assenza testo)
+ * che assorbe localmente i trascinamenti verticali per prevenire chiusure accidentali tramite swipe-down.
+ */
+@Composable
+private fun LyricsPlaceholderView(
+    icon: ImageVector,
+    iconTint: Color,
+    badgeBackgroundColor: Color,
+    title: String,
+    subtitle: String,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .draggable(
+                orientation = Orientation.Vertical,
+                state = rememberDraggableState {}
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.padding(horizontal = 24.dp)
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = badgeBackgroundColor,
+                modifier = Modifier.size(64.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = iconTint,
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = Color.White,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White.copy(alpha = 0.65f),
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
 
 /**
  * Ricerca binaria O(log N) dell'indice del verso attivo al tempo [currentPositionMs] con anticipo [leadMs].
@@ -102,88 +188,26 @@ fun SyncedLyricsView(
     isInstrumental: Boolean = lyricsData?.isInstrumental == true
 ) {
     if (isInstrumental) {
-        Box(
-            modifier = modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-                modifier = Modifier.padding(horizontal = 24.dp)
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-                    modifier = Modifier.size(64.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.MusicNote,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(32.dp)
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = stringResource(R.string.lyrics_no_lyrics_for_track),
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White,
-                    textAlign = TextAlign.Center
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = stringResource(R.string.lyrics_instrumental),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White.copy(alpha = 0.65f),
-                    textAlign = TextAlign.Center
-                )
-            }
-        }
+        LyricsPlaceholderView(
+            icon = Icons.Default.MusicNote,
+            iconTint = MaterialTheme.colorScheme.primary,
+            badgeBackgroundColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+            title = stringResource(R.string.lyrics_no_lyrics_for_track),
+            subtitle = stringResource(R.string.lyrics_instrumental),
+            modifier = modifier
+        )
         return
     }
 
     if (lyricsData == null || lyricsData.lines.isEmpty()) {
-        Box(
-            modifier = modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-                modifier = Modifier.padding(horizontal = 24.dp)
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = Color.White.copy(alpha = 0.1f),
-                    modifier = Modifier.size(64.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.Lyrics,
-                            contentDescription = null,
-                            tint = Color.White.copy(alpha = 0.6f),
-                            modifier = Modifier.size(32.dp)
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = stringResource(R.string.lyrics_no_lyrics_available),
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White,
-                    textAlign = TextAlign.Center
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = stringResource(R.string.lyrics_use_auto_tagger),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White.copy(alpha = 0.65f),
-                    textAlign = TextAlign.Center
-                )
-            }
-        }
+        LyricsPlaceholderView(
+            icon = Icons.Default.Lyrics,
+            iconTint = Color.White.copy(alpha = 0.6f),
+            badgeBackgroundColor = Color.White.copy(alpha = 0.1f),
+            title = stringResource(R.string.lyrics_no_lyrics_available),
+            subtitle = stringResource(R.string.lyrics_use_auto_tagger),
+            modifier = modifier
+        )
         return
     }
 
@@ -310,56 +334,60 @@ fun SyncedLyricsView(
         }
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp, start = 16.dp, end = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+    Box(
+        modifier = modifier.nestedScroll(LyricsVerticalScrollBlocker)
     ) {
-        itemsIndexed(lines, key = { index, item -> "${index}_${item.timeMs}" }) { index, line ->
-            val isActive = isSynced && index == activeIndex
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp, start = 16.dp, end = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            itemsIndexed(lines, key = { index, item -> "${index}_${item.timeMs}" }) { index, line ->
+                val isActive = isSynced && index == activeIndex
 
-            val textColor by animateColorAsState(
-                targetValue = when {
-                    isActive -> MaterialTheme.colorScheme.primary
-                    isSynced -> Color.White.copy(alpha = 0.45f)
-                    else -> Color.White.copy(alpha = 0.85f)
-                },
-                animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
-                label = "lyricTextColor"
-            )
-
-            val fontSize = if (isActive) 22.sp else 18.sp
-            val fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable(
-                        enabled = line.timeMs >= 0,
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) {
-                        if (line.timeMs >= 0) {
-                            isUserScrolling = false
-                            onSeekTo(line.timeMs)
-                        }
+                val textColor by animateColorAsState(
+                    targetValue = when {
+                        isActive -> MaterialTheme.colorScheme.primary
+                        isSynced -> Color.White.copy(alpha = 0.45f)
+                        else -> Color.White.copy(alpha = 0.85f)
                     },
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = line.text,
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                        fontSize = fontSize,
-                        fontWeight = fontWeight,
-                        lineHeight = 28.sp
-                    ),
-                    color = textColor,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                    animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
+                    label = "lyricTextColor"
                 )
+
+                val fontSize = if (isActive) 22.sp else 18.sp
+                val fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(
+                            enabled = line.timeMs >= 0,
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            if (line.timeMs >= 0) {
+                                isUserScrolling = false
+                                onSeekTo(line.timeMs)
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = line.text,
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            fontSize = fontSize,
+                            fontWeight = fontWeight,
+                            lineHeight = 28.sp
+                        ),
+                        color = textColor,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                    )
+                }
             }
         }
     }

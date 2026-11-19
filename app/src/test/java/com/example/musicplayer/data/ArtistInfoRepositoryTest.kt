@@ -643,4 +643,143 @@ class ArtistInfoRepositoryTest {
             LastFmConfig.setCustomCredentials(null, null)
         }
     }
+
+    @Test
+    fun testIsReliableMusicWikipediaPageRejectsSongsAndAlbums() {
+        val singleWithSuffix = JSONObject("""
+            {
+                "title": "Brividi (singolo)",
+                "type": "standard",
+                "description": "singolo di Mahmood e Blanco del 2022",
+                "extract": "Brividi è un singolo dei cantanti italiani Mahmood e Blanco, pubblicato il 2 febbraio 2022."
+            }
+        """.trimIndent())
+        assertFalse(isReliableMusicWikipediaPage(singleWithSuffix, "Mahmood"))
+
+        val singleWithoutSuffix = JSONObject("""
+            {
+                "title": "Cenere",
+                "type": "standard",
+                "description": "",
+                "extract": "Cenere è un brano musicale del rapper italiano Lazza, pubblicato come secondo singolo dall'album Sirio."
+            }
+        """.trimIndent())
+        assertFalse(isReliableMusicWikipediaPage(singleWithoutSuffix, "Lazza"))
+
+        val albumJson = JSONObject("""
+            {
+                "title": "Sirio",
+                "type": "standard",
+                "description": "album in studio di Lazza",
+                "extract": "Sirio è il terzo album in studio del rapper italiano Lazza, pubblicato nel 2022."
+            }
+        """.trimIndent())
+        assertFalse(isReliableMusicWikipediaPage(albumJson, "Lazza"))
+
+        val englishSongJson = JSONObject("""
+            {
+                "title": "Blinding Lights",
+                "type": "standard",
+                "description": "2019 single by the Weeknd",
+                "extract": "Blinding Lights is a song by Canadian singer-songwriter the Weeknd, recorded for his fourth studio album After Hours."
+            }
+        """.trimIndent())
+        assertFalse(isReliableMusicWikipediaPage(englishSongJson, "The Weeknd", lang = "en"))
+
+        val artistMentioningDebutAlbum = JSONObject("""
+            {
+                "title": "Mario Rossi",
+                "type": "standard",
+                "description": "cantante italiano",
+                "extract": "Mario Rossi è un cantante italiano; il suo primo lavoro è un album uscito nel 2020."
+            }
+        """.trimIndent())
+        assertTrue(isReliableMusicWikipediaPage(artistMentioningDebutAlbum, "Mario Rossi"))
+    }
+
+    @Test
+    fun testEndToEndRejectsWikipediaSongPagesAndNeverShowsSongDescription() = runBlocking {
+        val mockContext = Mockito.mock(Context::class.java)
+        Mockito.`when`(mockContext.filesDir).thenReturn(tempFolder.root)
+
+        val mockClient = OkHttpClient.Builder()
+            .addInterceptor(Interceptor { chain ->
+                val url = chain.request().url
+                val host = url.host
+                val path = url.encodedPath
+                val bodyJson = when {
+                    host == "api.deezer.com" && path == "/search" -> {
+                        """
+                        {
+                          "data": [
+                            {
+                              "id": 777,
+                              "title": "Stella Cadente",
+                              "title_short": "Stella Cadente",
+                              "artist": {
+                                "id": 888,
+                                "name": "Artista Test",
+                                "picture_xl": "https://cdn.deezer.com/artist/888/pic.jpg"
+                              },
+                              "album": { "id": 999, "title": "Notte" }
+                            }
+                          ]
+                        }
+                        """.trimIndent()
+                    }
+                    host == "api.deezer.com" && path == "/artist/888/top" -> {
+                        """{"data": [{"title": "Stella Cadente", "title_short": "Stella Cadente"}]}"""
+                    }
+                    host == "api.deezer.com" && path == "/artist/888/albums" -> {
+                        """{"data": [{"title": "Notte"}]}"""
+                    }
+                    (host == "it.wikipedia.org" || host == "en.wikipedia.org") && path == "/w/api.php" && url.queryParameter("list") == "search" -> {
+                        """{"query": {"search": [{"title": "Stella Cadente"}, {"title": "Notte (album)"}]}}"""
+                    }
+                    (host == "it.wikipedia.org" || host == "en.wikipedia.org") && path == "/w/api.php" && url.queryParameter("prop")?.contains("extracts") == true -> {
+                        """
+                        {
+                          "query": {
+                            "pages": {
+                              "301": {
+                                "pageid": 301,
+                                "title": "Stella Cadente",
+                                "description": "brano musicale",
+                                "extract": "Stella Cadente è una canzone scritta ed interpretata dal cantante Artista Test, estratta dall'album Notte."
+                              },
+                              "302": {
+                                "pageid": 302,
+                                "title": "Notte (album)",
+                                "description": "album in studio di Artista Test",
+                                "extract": "Notte è il primo album in studio di Artista Test."
+                              }
+                            }
+                          }
+                        }
+                        """.trimIndent()
+                    }
+                    else -> """{}"""
+                }
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(bodyJson.toResponseBody("application/json".toMediaType()))
+                    .build()
+            })
+            .build()
+
+        val repo = ArtistInfoRepository(context = mockContext, client = mockClient)
+        LastFmConfig.setCustomCredentials(null, null)
+        val info = repo.getArtistInfo(
+            artistName = "Artista Test",
+            forceRefresh = true,
+            referenceTrackTitles = listOf("Stella Cadente"),
+            referenceAlbumTitles = listOf("Notte")
+        )
+
+        assertEquals("https://cdn.deezer.com/artist/888/pic.jpg", info.photoUrl)
+        assertNull(info.biography)
+    }
 }

@@ -131,4 +131,15 @@ class QuerySanitizerTest {
         // Verifica che un titolo con suffisso "- Part I" resti integro
         assertNull(QuerySanitizer.extractFallbackArtistAndTitle("Shine On You Crazy Diamond - Part I"))
     }
+
+    @Test
+    fun `extractPrimaryAlbumArtist returns strictly the first artist for collaborations`() {
+        assertEquals("Marracash", QuerySanitizer.extractPrimaryAlbumArtist("Marracash feat. Guè"))
+        assertEquals("Lazza", QuerySanitizer.extractPrimaryAlbumArtist("Lazza, Sfera Ebbasta"))
+        assertEquals("Drake", QuerySanitizer.extractPrimaryAlbumArtist("Drake & 21 Savage"))
+        assertEquals("Salmo", QuerySanitizer.extractPrimaryAlbumArtist("Salmo x Noyz Narcos"))
+        assertEquals("Fedez", QuerySanitizer.extractPrimaryAlbumArtist("Fedez con J-Ax"))
+        assertEquals("Lazza", QuerySanitizer.extractPrimaryAlbumArtist("Lazza (feat. Shiva) - Topic"))
+        assertEquals("", QuerySanitizer.extractPrimaryAlbumArtist("Artista sconosciuto"))
+    }
 }

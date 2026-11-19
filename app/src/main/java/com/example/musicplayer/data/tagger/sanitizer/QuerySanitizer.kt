@@ -61,11 +61,11 @@ object QuerySanitizer {
     )
 
     private val FEAT_SUFFIX_REGEX = Regex(
-        """(?i)(\s*[\(\[]\s*(feat\.?|ft\.?|featuring|with|prod\.?\s*by)\s+[^\)\]]+[\)\]]|\s+(feat\.?|ft\.?|featuring)\s+.*)$"""
+        """(?i)(\s*[\(\[]\s*(feat\.?|ft\.?|featuring|with|con|prod\.?\s*by)\s+[^\)\]]+[\)\]]|\s+(feat\.?|ft\.?|featuring|con)\s+.*)$"""
     )
 
     private val ARTIST_SPLIT_REGEX = Regex(
-        """(?i)(?:\s*(?:,|&|\+|/|;)\s*|\s+(?:feat\.?|ft\.?|featuring|with|vs\.?|x|and)\s+)"""
+        """(?i)(?:\s*(?:,|&|\+|/|;)\s*|\s+(?:feat\.?|ft\.?|featuring|with|con|vs\.?|x|and)\s+)"""
     )
 
     private val UNKNOWN_TITLE_REGEX = Regex(
@@ -368,6 +368,17 @@ object QuerySanitizer {
         val withoutParens = withoutTopic.replace(FEAT_SUFFIX_REGEX, "").trim()
         val firstToken = withoutParens.split(ARTIST_SPLIT_REGEX).firstOrNull()?.trim().orEmpty()
         return cleanRawString(firstToken.ifBlank { withoutParens })
+    }
+
+    /**
+     * Restituisce esclusivamente il nome del primo artista principale da utilizzare come Album Artist univoco,
+     * rimuovendo eventuali co-autori/featuring (es. "Artista A feat. Artista B", "Artista A & B", "Artista A, B")
+     * così che i brani dell'album non vengano frammentati in dischi separati.
+     */
+    fun extractPrimaryAlbumArtist(artist: String): String {
+        val raw = cleanArtistString(artist).ifBlank { artist.trim() }
+        if (raw.isBlank() || isArtistUnknownOrDirty(raw)) return ""
+        return extractPrimaryArtistForSearch(raw).ifBlank { raw }
     }
 
     /**

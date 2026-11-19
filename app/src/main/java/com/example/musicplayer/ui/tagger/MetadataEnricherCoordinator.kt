@@ -197,7 +197,8 @@ class MetadataEnricherCoordinator(
             title = track.title,
             artist = track.artist,
             album = track.album,
-            albumArtist = track.albumArtist.ifBlank { track.artist },
+            albumArtist = QuerySanitizer.extractPrimaryAlbumArtist(track.albumArtist.ifBlank { track.artist })
+                .ifBlank { track.albumArtist.ifBlank { track.artist } },
             trackNumber = track.trackNumber.takeIf { it > 0 },
             discNumber = track.discNumber.coerceAtLeast(1),
             genre = track.genre.takeIf { it.isNotBlank() }
@@ -366,7 +367,8 @@ class MetadataEnricherCoordinator(
                         title = track.title,
                         artist = track.artist,
                         album = track.album,
-                        albumArtist = track.albumArtist.ifBlank { track.artist },
+                        albumArtist = QuerySanitizer.extractPrimaryAlbumArtist(track.albumArtist.ifBlank { track.artist })
+                .ifBlank { track.albumArtist.ifBlank { track.artist } },
                         trackNumber = inferredNum,
                         discNumber = track.discNumber.coerceAtLeast(1)
                     )
@@ -454,22 +456,13 @@ class MetadataEnricherCoordinator(
                 else -> album.title.trim()
             }
 
-            val resolvedUnifiedAlbumArtist = when {
-                !officialAlbumDetail?.albumArtist.isNullOrBlank() -> {
-                    val deezerAlbArt = officialAlbumDetail!!.albumArtist
-                    if (!QuerySanitizer.isArtistUnknownOrDirty(album.artist) &&
-                        QuerySanitizer.hasRicherArtistCredits(album.artist, deezerAlbArt)
-                    ) {
-                        album.artist.trim()
-                    } else {
-                        deezerAlbArt
-                    }
-                }
-                !QuerySanitizer.isArtistUnknownOrDirty(album.artist) && (!hasMajorityConsensus || QuerySanitizer.hasRicherArtistCredits(album.artist, unifiedAlbumRef.albumArtist)) ->
-                    album.artist.trim()
-                unifiedAlbumRef.albumArtist.isNotBlank() -> unifiedAlbumRef.albumArtist.trim()
-                else -> album.artist.trim()
-            }
+            val resolvedUnifiedAlbumArtist = resolveUnifiedAlbumArtist(
+                officialAlbumArtist = officialAlbumDetail?.albumArtist,
+                unifiedCandidateAlbumArtist = unifiedAlbumRef.albumArtist,
+                localAlbumArtist = album.artist,
+                firstTrackArtist = firstTrack.artist,
+                hasMajorityConsensus = hasMajorityConsensus
+            )
 
             val refMatchesUnifiedAlbum = QuerySanitizer.titlesMatch(
                 QuerySanitizer.normalizeAlbumTitle(unifiedAlbumRef.album),
@@ -840,5 +833,38 @@ class MetadataEnricherCoordinator(
 
     fun createDeleteRequestIntentSender(uris: List<Uri>): IntentSender? {
         return storageWriteManager.createDeleteRequestIntentSender(uris)
+    }
+
+    companion object {
+        /**
+         * Determina l'Album Artist univoco in modalità "Uniforma Album" garantendo di conservare
+         * automaticamente solo il nome del primo artista principale (escludendo co-autori/featuring)
+         * affinché tutti i brani del disco restino raggruppati in un unico album.
+         */
+        internal fun resolveUnifiedAlbumArtist(
+            officialAlbumArtist: String?,
+            unifiedCandidateAlbumArtist: String,
+            localAlbumArtist: String,
+            firstTrackArtist: String,
+            hasMajorityConsensus: Boolean
+        ): String {
+            val rawChosen = when {
+                !officialAlbumArtist.isNullOrBlank() &&
+                    !QuerySanitizer.isArtistUnknownOrDirty(officialAlbumArtist) ->
+                    officialAlbumArtist.trim()
+                !QuerySanitizer.isArtistUnknownOrDirty(localAlbumArtist) && !hasMajorityConsensus ->
+                    localAlbumArtist.trim()
+                unifiedCandidateAlbumArtist.isNotBlank() &&
+                    !QuerySanitizer.isArtistUnknownOrDirty(unifiedCandidateAlbumArtist) ->
+                    unifiedCandidateAlbumArtist.trim()
+                !QuerySanitizer.isArtistUnknownOrDirty(localAlbumArtist) ->
+                    localAlbumArtist.trim()
+                !QuerySanitizer.isArtistUnknownOrDirty(firstTrackArtist) ->
+                    firstTrackArtist.trim()
+                else ->
+                    localAlbumArtist.trim().ifBlank { firstTrackArtist.trim() }
+            }
+            return QuerySanitizer.extractPrimaryAlbumArtist(rawChosen).ifBlank { rawChosen }
+        }
     }
 }

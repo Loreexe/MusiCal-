@@ -7,6 +7,7 @@ import com.example.musicplayer.data.groupTracksIntoAlbums
 import com.example.musicplayer.data.tagger.model.EnrichedMetadata
 import com.example.musicplayer.data.tagger.repository.EnricherOptions
 import com.example.musicplayer.ui.tagger.EnricherUiState
+import com.example.musicplayer.ui.tagger.MetadataEnricherCoordinator
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -218,5 +219,41 @@ class AlbumGroupingWithAlbumArtistTest {
         assertFalse(updatedState.tracksEnriched.containsKey(20L))
         assertEquals(1, updatedState.movedOutTracks.size)
         assertEquals("Another Album", updatedState.movedOutTracks[20L]?.second?.album)
+    }
+
+    @Test
+    fun testResolveUnifiedAlbumArtistKeepsOnlyFirstArtist() {
+        assertEquals(
+            "Marracash",
+            MetadataEnricherCoordinator.resolveUnifiedAlbumArtist(
+                officialAlbumArtist = "Marracash",
+                unifiedCandidateAlbumArtist = "Marracash feat. Guè",
+                localAlbumArtist = "Marracash feat. Guè",
+                firstTrackArtist = "Marracash feat. Guè",
+                hasMajorityConsensus = true
+            )
+        )
+
+        assertEquals(
+            "Lazza",
+            MetadataEnricherCoordinator.resolveUnifiedAlbumArtist(
+                officialAlbumArtist = "Lazza, Sfera Ebbasta",
+                unifiedCandidateAlbumArtist = "Lazza",
+                localAlbumArtist = "Artista sconosciuto",
+                firstTrackArtist = "Lazza feat. Sfera Ebbasta",
+                hasMajorityConsensus = true
+            )
+        )
+
+        assertEquals(
+            "Tedua",
+            MetadataEnricherCoordinator.resolveUnifiedAlbumArtist(
+                officialAlbumArtist = null,
+                unifiedCandidateAlbumArtist = "",
+                localAlbumArtist = "Artista sconosciuto",
+                firstTrackArtist = "Tedua & Rkomi",
+                hasMajorityConsensus = false
+            )
+        )
     }
 }

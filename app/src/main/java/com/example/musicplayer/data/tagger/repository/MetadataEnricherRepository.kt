@@ -153,8 +153,11 @@ class MetadataEnricherRepository(
                     fallbackSplit != null -> fallbackSplit.first
                     else -> track.artist.trim()
                 }
-                val preservedAlbumArtist = track.albumArtist.trim().takeIf { !QuerySanitizer.isArtistUnknownOrDirty(it) }
+                val rawPreservedAlbumArtist = track.albumArtist.trim()
+                    .takeIf { !QuerySanitizer.isArtistUnknownOrDirty(it) }
                     ?: preservedArtist
+                val preservedAlbumArtist = QuerySanitizer.extractPrimaryAlbumArtist(rawPreservedAlbumArtist)
+                    .ifBlank { rawPreservedAlbumArtist }
 
                 val extractedTrack = QuerySanitizer.extractTrackNumberFromFileName(track.displayName)
                 val fallbackMetadata = EnrichedMetadata(
@@ -352,8 +355,10 @@ class MetadataEnricherRepository(
     ): EnrichedMetadata {
         val albumDetailRes = deezerClient.getAlbumDetail(candidate.albumId).getOrNull()
 
-        val albumArtist = albumDetailRes?.albumArtist?.takeIf { it.isNotBlank() }
+        val rawAlbumArtist = albumDetailRes?.albumArtist?.takeIf { it.isNotBlank() }
             ?: candidate.artistName
+        val albumArtist = QuerySanitizer.extractPrimaryAlbumArtist(rawAlbumArtist)
+            .ifBlank { rawAlbumArtist.trim() }
 
         val rawAlbumTitle = albumDetailRes?.title?.takeIf { it.isNotBlank() }
             ?: candidate.albumTitle

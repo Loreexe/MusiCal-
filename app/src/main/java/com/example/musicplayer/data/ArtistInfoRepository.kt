@@ -43,7 +43,7 @@ class ArtistInfoRepository(
     private val artistUpdates = MutableSharedFlow<String>(extraBufferCapacity = 8)
 
     companion object {
-        const val CURRENT_DISAMBIGUATION_VERSION = 1
+        const val CURRENT_DISAMBIGUATION_VERSION = 2
     }
 
     @Volatile
@@ -125,7 +125,9 @@ class ArtistInfoRepository(
         // 1. Se la biografia proviene da Wikipedia non verificata o troncata ("...")
         // 2. Se la biografia o la foto mancano
         // 3. Se l'entry è stata salvata prima del motore di disambiguazione anti-omonimia e abbiamo brani di riferimento
-        val isBogusBio = cached?.biography != null && !cached.isCustomBio && !isReliableMusicText(cached.biography)
+        val isBogusBio = cached?.biography != null &&
+            !cached.isCustomBio &&
+            (!isReliableMusicText(cached.biography) || isSongOrAlbumDescriptionText(cached.biography))
         val isOldWikipediaBio = cached?.source == "Wikipedia" && !cached.isCustomBio && cached.disambiguationVersion < CURRENT_DISAMBIGUATION_VERSION
         val isTruncatedBio = cached?.biography != null && !cached.isCustomBio && cached.biography.endsWith("...")
         val needsDisambiguationUpgrade = hasRefs &&
@@ -178,7 +180,9 @@ class ArtistInfoRepository(
 
         val cached = memoryCache[clean.lowercase()]
         val hasRefs = referenceTrackTitles.isNotEmpty() || referenceAlbumTitles.isNotEmpty()
-        val isBogusBio = cached?.biography != null && !cached.isCustomBio && !isReliableMusicText(cached.biography)
+        val isBogusBio = cached?.biography != null &&
+            !cached.isCustomBio &&
+            (!isReliableMusicText(cached.biography) || isSongOrAlbumDescriptionText(cached.biography))
         val isOldWikipediaBio = cached?.source == "Wikipedia" && !cached.isCustomBio && cached.disambiguationVersion < CURRENT_DISAMBIGUATION_VERSION
         val isTruncatedBio = cached?.biography != null && !cached.isCustomBio && cached.biography.endsWith("...")
         val needsDisambiguationUpgrade = hasRefs &&
@@ -666,7 +670,18 @@ class ArtistInfoRepository(
         val hasRefs = trackRefs.isNotEmpty() || albumRefs.isNotEmpty()
         val candidateTitles = linkedSetOf<String>()
 
-        // 1. Ricerca full-text incrociata "Artista + (Brani/Album)" per trovare voci omonime/anagrafiche corrette
+        // 1. Titolo diretto e suffissi disambiguati musicali dell'artista (prioritari affinché non vengano
+        // scartati da eventuali voci di singoli/album nella ricerca incrociata)
+        candidateTitles.add(cleanTitle)
+        val suffixes = if (lang.equals("it", ignoreCase = true)) {
+            listOf("(cantante)", "(gruppo musicale)", "(rapper)", "(cantautore)", "(cantautrice)", "(musicista)", "(band)")
+        } else {
+            listOf("(musician)", "(singer)", "(band)", "(rapper)", "(musical group)", "(songwriter)")
+        }
+        suffixes.forEach { suffix -> candidateTitles.add("$cleanTitle $suffix") }
+
+        // 2. Ricerca full-text incrociata "Artista + (Brani/Album)" per voci omonime o nomi anagrafici,
+        // escludendo preventivamente pagine chiaramente intitolate a singoli/album/brani
         if (hasRefs) {
             val distinctTerms = (trackRefs + albumRefs)
                 .map { it.replace("\"", "").trim() }
@@ -676,25 +691,20 @@ class ArtistInfoRepository(
             if (distinctTerms.isNotEmpty()) {
                 val orClause = distinctTerms.joinToString(" OR ") { "\"$it\"" }
                 val crossQuery = "\"${cleanTitle.replace("\"", "")}\" ($orClause)"
-                candidateTitles.addAll(searchWikipediaPageTitles(domain, crossQuery, limit = 5))
+                searchWikipediaPageTitles(domain, crossQuery, limit = 5)
+                    .filterNot { hasMusicWorkTitleSuffix(it) }
+                    .forEach { candidateTitles.add(it) }
             }
         }
 
-        // 2. Titolo diretto e suffissi disambiguati musicali
-        candidateTitles.add(cleanTitle)
-        val suffixes = if (lang.equals("it", ignoreCase = true)) {
-            listOf("(cantante)", "(gruppo musicale)", "(rapper)", "(cantautore)", "(musicista)", "(band)")
-        } else {
-            listOf("(musician)", "(singer)", "(band)", "(rapper)", "(musical group)")
-        }
-        suffixes.forEach { suffix -> candidateTitles.add("$cleanTitle $suffix") }
-
-        // 3. Ricerca MediaWiki standard su titolo/contenuto (senza brani)
-        candidateTitles.addAll(searchWikipediaPageTitles(domain, "\"${cleanTitle.replace("\"", "")}\"", limit = 5))
+        // 3. Ricerca MediaWiki standard su titolo/contenuto (escludendo opere)
+        searchWikipediaPageTitles(domain, "\"${cleanTitle.replace("\"", "")}\"", limit = 5)
+            .filterNot { hasMusicWorkTitleSuffix(it) }
+            .forEach { candidateTitles.add(it) }
 
         // Valutazione batch via MediaWiki Query API (1 singola chiamata HTTP per tutti i candidati principali)
         val evaluated = mutableListOf<VerifiedBioCandidate>()
-        val batchTitles = candidateTitles.take(10)
+        val batchTitles = candidateTitles.take(15)
         val batchPages = fetchWikipediaBatchPages(domain, batchTitles)
 
         if (batchPages.isNotEmpty()) {
@@ -869,10 +879,27 @@ class ArtistInfoRepository(
         val cleanBioText = displayBio.trim()
         if (cleanBioText.isBlank()) return null
 
-        val mentions = countCatalogMentionsInText(fullText, trackRefs, albumRefs)
         val rawTitle = pageJson.optString("title", "").trim()
         val baseTitle = rawTitle.replace(Regex("""\s*\(.*?\)\s*"""), "").trim()
+        val cleanArtistNorm = cleanTitle.lowercase()
+        val baseTitleNorm = baseTitle.lowercase()
         val exactTitleMatch = baseTitle.equals(cleanTitle, ignoreCase = true)
+        val artistTitleCompatible = exactTitleMatch ||
+            baseTitleNorm.replace("'", "").replace("-", " ") == cleanArtistNorm.replace("'", "").replace("-", " ") ||
+            baseTitleNorm.startsWith("$cleanArtistNorm ") ||
+            cleanArtistNorm.startsWith("$baseTitleNorm ")
+
+        // Se il titolo della pagina coincide con un brano o album dell'artista (e non con l'artista stesso),
+        // si tratta della voce di una canzone o di un disco, non della biografia del cantante.
+        if (!artistTitleCompatible && (
+                trackRefs.any { QuerySanitizer.titlesMatch(baseTitle, it) } ||
+                albumRefs.any { QuerySanitizer.titlesMatch(baseTitle, it) }
+            )
+        ) {
+            return null
+        }
+
+        val mentions = countCatalogMentionsInText(fullText, trackRefs, albumRefs)
 
         var score = (mentions.trackMatches * 60) + (mentions.albumMatches * 45) + (if (exactTitleMatch) 15 else 0)
         val hasRefs = trackRefs.isNotEmpty() || albumRefs.isNotEmpty()
@@ -927,6 +954,9 @@ class ArtistInfoRepository(
                 }
                 MultiArtistBioStatus.SELECTED_SECTION -> {
                     val selectedText = multiResult.selectedBio ?: return LastFmFetchResult(rejectedAsHomonym = true)
+                    if (isSongOrAlbumDescriptionText(selectedText)) {
+                        return LastFmFetchResult(candidate = null, rejectedAsHomonym = true)
+                    }
                     val mentions = countCatalogMentionsInText(selectedText, trackRefs, albumRefs)
                     return LastFmFetchResult(
                         candidate = VerifiedBioCandidate(
@@ -940,6 +970,9 @@ class ArtistInfoRepository(
                     )
                 }
                 MultiArtistBioStatus.SINGLE_ARTIST -> {
+                    if (isSongOrAlbumDescriptionText(cleanedBio)) {
+                        return LastFmFetchResult(candidate = null, rejectedAsHomonym = true)
+                    }
                     val mentions = countCatalogMentionsInText(cleanedBio, trackRefs, albumRefs)
                     if (mentions.total > 0) {
                         return LastFmFetchResult(
@@ -1343,8 +1376,16 @@ fun isReliableMusicWikipediaPage(
     }
 
     val rawTitle = json.optString("title").trim()
+    if (hasMusicWorkTitleSuffix(rawTitle)) {
+        return false
+    }
+
     val lowerTitle = rawTitle.lowercase()
     val description = json.optString("description").trim().lowercase()
+
+    if (isSongOrAlbumDescriptionText(extract, description)) {
+        return false
+    }
 
     // 1. Riconoscimento suffissi disambiguati musicali nel titolo
     val hasMusicTitleSuffix = lowerTitle.contains("(cantante)") ||
@@ -1396,17 +1437,14 @@ fun isReliableMusicWikipediaPage(
         return false
     }
 
-    // 4. Indicatori musicali generali nell'estratto
+    // 4. Indicatori di ruolo/biografia d'artista nell'estratto (evitando parole generiche come "canzone"/"album" che compaiono anche sulle schede dei brani)
     val musicKeywords = listOf(
         "cantante", "cantautore", "cantautrice", "rapper", "trapper", "gruppo musicale", "band",
         "musicista", "compositore", "compositrice", "disc jockey", "dj", "chitarrista", "batterista",
         "bassista", "pianista", "tastierista", "sassofonista", "produttore discografico", "beatmaker",
-        "album in studio", "studio album", "discografia", "discography", "singolo discografico", "singoli",
-        "brano musicale", "brani", "canzone", "canzoni", "casa discografica", "etichetta discografica",
-        "record label", "genere musicale", "classifica fimi", "billboard", "grammy",
-        "festival di sanremo", "tournée", "concerto", "concerti", "musica pop", "musica rock",
-        "musica rap", "musica trap", "musica hip hop", "musica elettronica", "musica jazz", "musica metal",
-        "singer", "songwriter", "musician", "musical group", "record producer"
+        "polistrumentista", "paroliere", "discografia", "discography", "festival di sanremo", "tournée",
+        "singer", "songwriter", "musician", "musical group", "record producer", "vocalist", "guitarist",
+        "drummer", "bassist", "pianist", "keyboardist"
     )
 
     val hasMusicKeywordsInExtract = musicKeywords.any { combinedLower.contains(it) }
@@ -1429,6 +1467,53 @@ fun isReliableMusicWikipediaPage(
         (cleanArtist.contains(" ") && cleanArtist.split(" ").all { it.length > 2 && combinedLower.contains(it) })
 
     return titleMatches || extractMentionsArtist
+}
+
+private val WORK_TITLE_SUFFIX_REGEX = Regex(
+    """\([^)]*\b(?:singolo|brano(?:\s+musicale)?|canzone|traccia|album|ep|mixtape|raccolta|compilation|colonna\s+sonora|soundtrack|tourn[eé]e|video\s+musicale|discografia|videografia|song|single|track|extended\s+play|music\s+video|discography|videography)\b[^)]*\)""",
+    RegexOption.IGNORE_CASE
+)
+
+private val WORK_DESCRIPTION_REGEX = Regex(
+    """\b(?:singolo(?:\s+discografico)?|brano\s+musicale|singolo\s+di|brano\s+di|canzone\s+di|album\s+(?:in\s+studio|dal\s+vivo|di\s+debutto|di|del)|ep\s+(?:di|del)|colonna\s+sonora|mixtape\s+(?:di|by)|single\s+by|song\s+by|song\s+of|track\s+by|studio\s+album|debut\s+album|live\s+album|compilation\s+album|soundtrack\s+album|extended\s+play|music\s+video|discography|discografia)\b|^(?:\d{4}\s+)?(?:album|single|song|brano|canzone|singolo|ep|mixtape)\b""",
+    RegexOption.IGNORE_CASE
+)
+
+private val WORK_LEAD_COPULA_REGEX = Regex(
+    """(?:^|[\s"'(\[«.,;:—–-])(?:[èÈéÉe]|f[uo]|era|erano|sono|furono|was|were|is|are)\s+(?:stato\s+|stata\s+|stati\s+|state\s+)?(?:un['’]?|una|uno|il|lo|la|i|gli|le|l['’]|a|an|the)(?:\s+(?:primo|secondo|terzo|quarto|quinto|sesto|nuovo|ultimo|celebre|famoso|noto|principale|debut|lead|first|second|third|fourth|fifth|promotional|promo|charity|collaborative|live|studio|compilation|remix|greatest|soundtrack|extended|self-titled|hit|popular))*\s+(?:singolo(?:\s+discografico)?|brano(?:\s+musicale)?|canzone|traccia|album(?:\s+in\s+studio|\s+dal\s+vivo|\s+di\s+debutto)?|ep|extended\s+play|mixtape|raccolta|compilation|colonna\s+sonora|cofanetto|single|song|track|ballad|album|mixtape|soundtrack|music\s+video|discography)(?=$|[\s.,;:!?)"'»])""",
+    RegexOption.IGNORE_CASE
+)
+
+private val ARTIST_ROLE_COPULA_REGEX = Regex(
+    """(?:^|[\s"'(\[«.,;:—–-])(?:[èÈéÉe]|f[uo]|era|erano|sono|furono|was|were|is|are)\s+(?:stato\s+|stata\s+|stati\s+|state\s+)?(?:un['’]?|una|dei|degli|delle|a|an|the)?(?:\s+(?!di\b|del\b|della\b|dello\b|dei\b|degli\b|delle\b|by\b|of\b|from\b|singol|bran|canzon|tracc|album|ep\b|mixtape|song|single|track|raccolta|compilation|colonna|soundtrack)[a-zà-ù'-]+){0,3}\s+(?:cantante|cantautore|cantautrice|rapper|trapper|musicista|gruppo(?:\s+musicale)?|band|duo|trio|compositore|compositrice|produttore|disc\s+jockey|dj|polistrumentista|artista|singer|songwriter|musician|musical\s+group|record\s+producer|composer|vocalist|guitarist|drummer|bassist|pianist)(?=$|[\s.,;:!?)"'»])""",
+    RegexOption.IGNORE_CASE
+)
+
+/**
+ * Rileva se il titolo di una pagina Wikipedia appartiene chiaramente a un'opera musicale
+ * (singolo, brano, album, EP, raccolta, tour, discografia) anziché a un artista.
+ */
+fun hasMusicWorkTitleSuffix(rawTitle: String): Boolean {
+    return rawTitle.isNotBlank() && WORK_TITLE_SUFFIX_REGEX.containsMatchIn(rawTitle)
+}
+
+/**
+ * Rileva se la descrizione Wikidata o l'incipit di un testo descrivono un brano/singolo/album
+ * invece della biografia di un cantante o gruppo musicale.
+ */
+fun isSongOrAlbumDescriptionText(text: String?, description: String = ""): Boolean {
+    if (description.isNotBlank() && WORK_DESCRIPTION_REGEX.containsMatchIn(description)) {
+        return true
+    }
+    if (text.isNullOrBlank()) return false
+    val leadSlice = text.trim().lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(420)
+    if (leadSlice.isBlank()) return false
+
+    val workMatch = WORK_LEAD_COPULA_REGEX.find(leadSlice) ?: return false
+    val artistMatch = ARTIST_ROLE_COPULA_REGEX.find(leadSlice)
+    // Se il soggetto viene definito prima come artista/band (es. "... è un cantante; il suo debutto è un album") è una bio valida;
+    // se invece la frase definisce il soggetto stesso come singolo/canzone/album, va scartata.
+    return artistMatch == null || workMatch.range.first < artistMatch.range.first
 }
 
 /**

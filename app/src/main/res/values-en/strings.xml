@@ -51,13 +51,20 @@
     <string name="lang_system">System default</string>
     <string name="lang_italian">Italiano</string>
     <string name="lang_english">English</string>
+    <string name="lang_short_it">IT</string>
+    <string name="lang_short_en">EN</string>
+    <string name="lang_short_system">System</string>
 
     <!-- Settings -->
     <string name="settings_section_appearance">Appearance &amp; Theme</string>
+    <string name="settings_appearance_short">Appearance</string>
     <string name="settings_theme_mode">Theme mode</string>
     <string name="theme_system">System default</string>
     <string name="theme_light">Light theme</string>
     <string name="theme_dark">Dark theme</string>
+    <string name="theme_short_dark">Dark</string>
+    <string name="theme_short_light">Light</string>
+    <string name="theme_short_system">System</string>
     <string name="settings_section_playback">Playback &amp; Audio</string>
     <string name="settings_autoplay_title">Continuous autoplay</string>
     <string name="settings_autoplay_desc">Keep playing random songs when queue ends</string>

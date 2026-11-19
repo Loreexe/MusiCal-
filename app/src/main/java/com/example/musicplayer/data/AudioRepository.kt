@@ -7,12 +7,54 @@ import android.provider.MediaStore
 private val EXCLUDED_PATH_KEYWORDS = listOf(
     "whatsapp",
     "telegram",
+    "viber",
+    "signal",
+    "messenger",
+    "instagram",
+    "wechat",
+    "micromsg",
+    "discord",
+    "skype",
+    "truecaller",
+    "cubeacr",
+    "boldbeast",
     "recorder",
     "recordings",
+    "registrazioni",
+    "registrazione",
     "voice record",
+    "voicerecord",
+    "voicememo",
+    "voice memo",
+    "voice_memo",
+    "voice-memo",
+    "voicenote",
+    "voice note",
+    "voice_note",
+    "voice-note",
+    "note vocali",
+    "nota vocale",
+    "memo vocali",
+    "memo vocale",
+    "messaggi vocali",
     "callrecording",
+    "call recording",
+    "call_recording",
     "call_rec",
+    "callrecord",
+    "phonerecord",
+    "phone_record",
+    "phone record",
     "sound_recorder",
+    "soundrecorder",
+    "audiorecorder",
+    "audio_recorder",
+    "dictaphone",
+    "dittafono",
+    "screenrecord",
+    "screen_record",
+    "screen-record",
+    "chiamate",
     "ringtones",
     "notifications",
     "alarms",
@@ -25,22 +67,110 @@ private val EXCLUDED_PATH_KEYWORDS = listOf(
     "/tmp/"
 )
 
-private val VOICE_NOTE_PREFIXES = listOf(
+private val RECORDING_EXCLUDED_EXTENSIONS = setOf(".amr", ".3gp", ".3ga", ".awb", ".qcp", ".spx")
+
+private val RECORDING_ROOT_SEGMENT_REGEX = Regex(
+    """^(?:music/)?(?:sounds|record|calls|voice|memo|audio\s*notes?)(?:/|$)""",
+    RegexOption.IGNORE_CASE
+)
+
+private val SYNTHETIC_VOICE_NOTE_PREFIXES = listOf(
     "ptt-",
+    "ptt_",
     "aud-",
+    "aud_",
+    "audio_",
     "rec_",
     "rec-",
+    "record_",
+    "record-",
+    "recording_",
+    "recording-",
+    "registrazione vocale",
+    "registrazione_",
+    "registrazione-",
+    "nuova registrazione",
+    "new recording",
     "voice_",
     "voice-",
+    "voce_",
+    "voce-",
+    "memo_",
+    "memo-",
     "call_",
     "call-",
+    "call@",
+    "chiamata_",
+    "chiamata-",
+    "chiamata ",
     "audiorecord",
-    "soundrecord"
+    "soundrecord",
+    "dictaphone",
+    "dittafono"
 )
+
+private val NUMBERED_RECORDING_NAME_REGEX = Regex(
+    """^(?:voice|voce|rec|record|recording|registrazione(?:\s+vocale)?|memo(?:\s+vocale)?|nota\s+vocale|audio|call|chiamata)(?:[\s_#-]*\d+(?:[\s_#-].*)?)?$""",
+    RegexOption.IGNORE_CASE
+)
+
+private val TIMESTAMP_RECORDING_NAME_REGEX = Regex(
+    """^(?:@(?:rec|call)?[\s_-]*)?\d{4}[-_.]?\d{2}[-_.]?\d{2}(?:[\s_@.-]+\d{2}[-_.]?\d{2}(?:[-_.]?\d{2})?)?(?:[\s_-]*\d*)?$""",
+    RegexOption.IGNORE_CASE
+)
+
+private val DAY_TIME_RECORDING_NAME_REGEX = Regex(
+    """^(?:luned[ìi]|marted[ìi]|mercoled[ìi]|gioved[ìi]|venerd[ìi]|sabato|domenica|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(?:alle|at)\s+\d{1,2}[-.:]\d{2}(?:[-.:]\d{2})?(?:\s*\(\d+\))?$""",
+    RegexOption.IGNORE_CASE
+)
+
+private val WHATSAPP_WA_ID_REGEX = Regex("""^(?:ptt|aud|wa)[_-]?\d{4,}""", RegexOption.IGNORE_CASE)
+
+private val RECORDER_METADATA_NAMES = setOf(
+    "voice recorder",
+    "sound recorder",
+    "recorder",
+    "registratore",
+    "registratore vocale",
+    "call recorder",
+    "voice memos",
+    "voice memo",
+    "memo vocali",
+    "recordings",
+    "registrazioni",
+    "whatsapp audio",
+    "telegram audio",
+    "sounds",
+    "acr",
+    "cube acr"
+)
+
+private fun stripAudioExtension(fileName: String): String {
+    val dotIdx = fileName.lastIndexOf('.')
+    return if (dotIdx > 0) fileName.substring(0, dotIdx) else fileName
+}
+
+private fun matchesRecordingNamePattern(baseName: String, title: String): Boolean {
+    val candidates = listOf(baseName.trim(), title.trim()).filter { it.isNotBlank() }
+    return candidates.any { value ->
+        val lower = value.lowercase(java.util.Locale.ROOT)
+        SYNTHETIC_VOICE_NOTE_PREFIXES.any { lower.startsWith(it) } ||
+            NUMBERED_RECORDING_NAME_REGEX.matches(lower) ||
+            TIMESTAMP_RECORDING_NAME_REGEX.matches(lower) ||
+            DAY_TIME_RECORDING_NAME_REGEX.matches(lower) ||
+            WHATSAPP_WA_ID_REGEX.containsMatchIn(lower)
+    }
+}
+
+private fun hasRecorderPlaceholderMetadata(artist: String, album: String): Boolean {
+    val normArtist = artist.trim().lowercase(java.util.Locale.ROOT)
+    val normAlbum = album.trim().lowercase(java.util.Locale.ROOT)
+    return normArtist in RECORDER_METADATA_NAMES || normAlbum in RECORDER_METADATA_NAMES
+}
 
 /**
  * Valuta se un brano audio rientra nei criteri di musica autentica per la Scansione Intelligente,
- * escludendo note vocali WhatsApp/Telegram, registrazioni audio, chiamate e suoni di sistema.
+ * escludendo note vocali WhatsApp/Telegram, registrazioni audio, chiamate, suoni di sistema e flag MediaStore.
  */
 fun isIntelligentMusicTrack(
     relativePath: String,
@@ -48,10 +178,17 @@ fun isIntelligentMusicTrack(
     title: String,
     artist: String,
     album: String,
-    durationMs: Long
+    durationMs: Long,
+    isSystemNonMusic: Boolean = false
 ): Boolean {
-    val lowerPath = relativePath.lowercase(java.util.Locale.ROOT)
-    val lowerName = displayName.lowercase(java.util.Locale.ROOT)
+    // 0. Esclusione immediata tramite flag nativi MediaStore (IS_RECORDING, suonerie, allarmi, podcast, audiolibri)
+    if (isSystemNonMusic) {
+        return false
+    }
+
+    val lowerPath = relativePath.trim().replace('\\', '/').lowercase(java.util.Locale.ROOT)
+    val lowerName = displayName.trim().lowercase(java.util.Locale.ROOT)
+    val lowerBaseName = stripAudioExtension(lowerName)
 
     // 1. Esclusione file o cartelle nascoste
     if (lowerName.startsWith(".") || lowerPath.contains("/.")) {
@@ -59,38 +196,54 @@ fun isIntelligentMusicTrack(
     }
 
     // 2. Esclusione formati esclusivi di memo/registrazioni
-    if (lowerName.endsWith(".amr") || lowerName.endsWith(".3gp")) {
+    if (RECORDING_EXCLUDED_EXTENSIONS.any { lowerName.endsWith(it) }) {
         return false
     }
 
-    val hasAuthenticMetadata = hasAuthenticMusicMetadata(artist, album)
+    // 3. Esclusione percorsi indesiderati (applicata anche a sottocartelle di Music/ come Music/Recordings/)
+    if (EXCLUDED_PATH_KEYWORDS.any { lowerPath.contains(it) }) {
+        return false
+    }
 
-    // Fast-path: se il file è già archiviato nella cartella canonica "music/",
-    // è musica autentica e non occorre eseguire i 17 controlli blacklist su stringhe di percorso.
+    val hasAuthenticMetadata = hasAuthenticMusicMetadata(artist, album) &&
+        !hasRecorderPlaceholderMetadata(artist, album)
+
+    // 4. Metadati espliciti di app registratore / messaggistica
+    if (hasRecorderPlaceholderMetadata(artist, album)) {
+        return false
+    }
+
+    // 5. Cartelle OEM di registrazione (Sounds/, Record/, Calls/) a radice o prive di metadati musicali autentici
+    if (RECORDING_ROOT_SEGMENT_REGEX.containsMatchIn(lowerPath)) {
+        if (!lowerPath.startsWith("music/") || !hasAuthenticMetadata) {
+            return false
+        }
+    }
+
+    // 6. Pattern nome file / titolo tipici di registratori, note vocali o timestamp puri
+    val matchesRecordingName = matchesRecordingNamePattern(lowerBaseName, title)
+    if (matchesRecordingName) {
+        // Dentro Music/ ammettiamo solo brani con metadati musicali autentici completi (artista + album validi)
+        if (!lowerPath.startsWith("music/") || !hasAuthenticMetadata) {
+            return false
+        }
+    }
+
+    // 7. Fast-path sicuro per file nella cartella canonica "music/" che hanno superato i controlli precedenti
     if (lowerPath.startsWith("music/")) {
         if (durationMs in 1 until 15_000L && !hasAuthenticMetadata) return false
         if (durationMs > 1_200_000L && !hasAuthenticMetadata) return false
         return true
     }
 
-    // 3. Esclusione percorsi indesiderati
-    if (EXCLUDED_PATH_KEYWORDS.any { lowerPath.contains(it) }) {
+    // 8. Soglia minima di durata: 15 secondi (15.000 ms)
+    if (durationMs in 1 until 15_000L && !hasAuthenticMetadata) {
         return false
     }
 
-    // 4. Esclusione prefissi tipici di note vocali e registrazioni
-    if (VOICE_NOTE_PREFIXES.any { lowerName.startsWith(it) }) {
+    // 9. Soglia massima di durata: 20 minuti (1.200.000 ms)
+    if (durationMs > 1_200_000L && !hasAuthenticMetadata) {
         return false
-    }
-
-    // 5. Soglia minima di durata: 15 secondi (15.000 ms)
-    if (durationMs in 1 until 15_000L) {
-        if (!hasAuthenticMetadata) return false
-    }
-
-    // 6. Soglia massima di durata: 20 minuti (1.200.000 ms)
-    if (durationMs > 1_200_000L) {
-        if (!hasAuthenticMetadata) return false
     }
 
     return true
@@ -133,6 +286,12 @@ fun loadAudioFiles(
         MediaStore.Audio.Media.RELATIVE_PATH,
         MediaStore.Audio.Media.DATE_ADDED,
         MediaStore.Audio.Media.IS_MUSIC,
+        MediaStore.Audio.Media.IS_RECORDING,
+        MediaStore.Audio.Media.IS_RINGTONE,
+        MediaStore.Audio.Media.IS_NOTIFICATION,
+        MediaStore.Audio.Media.IS_ALARM,
+        MediaStore.Audio.Media.IS_PODCAST,
+        MediaStore.Audio.Media.IS_AUDIOBOOK,
         MediaStore.Audio.Media.GENRE,
         MediaStore.Audio.Media.TRACK,
         MediaStore.Audio.Media.DISC_NUMBER,
@@ -196,6 +355,15 @@ fun loadAudioFiles(
         val displayNameColumn = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
         val albumArtistColumn = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM_ARTIST).takeIf { it >= 0 }
             ?: cursor.getColumnIndex("album_artist")
+        val isRecordingColumn = cursor.getColumnIndex(MediaStore.Audio.Media.IS_RECORDING)
+        val isRingtoneColumn = cursor.getColumnIndex(MediaStore.Audio.Media.IS_RINGTONE)
+        val isNotificationColumn = cursor.getColumnIndex(MediaStore.Audio.Media.IS_NOTIFICATION)
+        val isAlarmColumn = cursor.getColumnIndex(MediaStore.Audio.Media.IS_ALARM)
+        val isPodcastColumn = cursor.getColumnIndex(MediaStore.Audio.Media.IS_PODCAST)
+        val isAudiobookColumn = cursor.getColumnIndex(MediaStore.Audio.Media.IS_AUDIOBOOK)
+
+        fun isFlagColumnTrue(colIdx: Int): Boolean =
+            colIdx >= 0 && !cursor.isNull(colIdx) && cursor.getInt(colIdx) != 0
 
         while (cursor.moveToNext()) {
             val id = cursor.getLong(idColumn)
@@ -209,9 +377,15 @@ fun loadAudioFiles(
             val relativePath = if (relativePathColumn >= 0) cursor.getString(relativePathColumn)?.trim().orEmpty() else ""
             val displayName = if (displayNameColumn >= 0) cursor.getString(displayNameColumn)?.trim().orEmpty() else ""
             val albumArtist = if (albumArtistColumn >= 0) cursor.getString(albumArtistColumn)?.trim().orEmpty() else ""
+            val isSystemNonMusic = isFlagColumnTrue(isRecordingColumn) ||
+                isFlagColumnTrue(isRingtoneColumn) ||
+                isFlagColumnTrue(isNotificationColumn) ||
+                isFlagColumnTrue(isAlarmColumn) ||
+                isFlagColumnTrue(isPodcastColumn) ||
+                isFlagColumnTrue(isAudiobookColumn)
 
             if (sourceMode == AudioSourceMode.INTELLIGENT &&
-                !isIntelligentMusicTrack(relativePath, displayName, title, artist, album, duration)
+                !isIntelligentMusicTrack(relativePath, displayName, title, artist, album, duration, isSystemNonMusic)
             ) {
                 continue
             }
