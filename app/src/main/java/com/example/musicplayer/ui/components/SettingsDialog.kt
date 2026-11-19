@@ -162,6 +162,24 @@ fun SettingsDialog(
     var isIgnoringBatteryOptimizations by remember(context) {
         mutableStateOf(powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true)
     }
+    var showBatteryGuideDialog by remember { mutableStateOf(false) }
+    val openBatteryAppSettings = {
+        val appDetailsIntent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.fromParts("package", context.packageName, null)
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            context.startActivity(appDetailsIntent)
+        } catch (_: Exception) {
+            try {
+                context.startActivity(
+                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            } catch (_: Exception) {
+            }
+        }
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, context) {
         val observer = LifecycleEventObserver { _, event ->
@@ -579,24 +597,8 @@ fun SettingsDialog(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable {
-                                    val appDetailsIntent = Intent(
-                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                        Uri.fromParts("package", context.packageName, null)
-                                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    try {
-                                        context.startActivity(appDetailsIntent)
-                                    } catch (_: Exception) {
-                                        try {
-                                            context.startActivity(
-                                                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            )
-                                        } catch (_: Exception) {
-                                        }
-                                    }
-                                }
-                                .padding(16.dp),
+                                .clickable { openBatteryAppSettings() }
+                                .padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 14.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
@@ -631,6 +633,17 @@ fun SettingsDialog(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            IconButton(
+                                onClick = { showBatteryGuideDialog = true }
+                            ) {
+                                Icon(
+                                    painter = painterResource(R.drawable.ic_info_outline),
+                                    contentDescription = stringResource(R.string.settings_battery_info_desc),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(2.dp))
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                                 contentDescription = null,
@@ -1255,6 +1268,70 @@ fun SettingsDialog(
                 confirmButton = {
                     TextButton(onClick = { importSummaryState = null }) {
                         Text(stringResource(R.string.close))
+                    }
+                }
+            )
+        }
+
+        if (showBatteryGuideDialog) {
+            AlertDialog(
+                onDismissRequest = { showBatteryGuideDialog = false },
+                icon = {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_info_outline),
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                },
+                title = {
+                    Text(
+                        text = stringResource(R.string.settings_battery_guide_title),
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Column(
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.settings_battery_guide_intro),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = stringResource(R.string.settings_battery_guide_step_1),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = stringResource(R.string.settings_battery_guide_step_2),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = stringResource(R.string.settings_battery_guide_step_3),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = stringResource(R.string.settings_battery_guide_step_4),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showBatteryGuideDialog = false }) {
+                        Text(stringResource(R.string.close))
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showBatteryGuideDialog = false
+                            openBatteryAppSettings()
+                        }
+                    ) {
+                        Text(stringResource(R.string.settings_battery_open_settings))
                     }
                 }
             )

@@ -67,6 +67,14 @@
     <string name="settings_battery_background_title">Riproduzione in background (Batteria)</string>
     <string name="settings_battery_unrestricted">Senza restrizioni — riproduzione in background protetta</string>
     <string name="settings_battery_optimized">Ottimizzata — tocca per evitare interruzioni quando esci dall\'app</string>
+    <string name="settings_battery_info_desc">Guida per evitare interruzioni in background</string>
+    <string name="settings_battery_guide_title">Evita interruzioni in background</string>
+    <string name="settings_battery_guide_intro">Alcuni telefoni chiudono le app quando esci dalla schermata o spegni lo schermo per risparmiare batteria. Per mantenere attiva la musica:</string>
+    <string name="settings_battery_guide_step_1">1. Tocca \"Apri impostazioni\" qui sotto per aprire la scheda di sistema dell\'app.</string>
+    <string name="settings_battery_guide_step_2">2. Entra in \"Batteria\" o \"Utilizzo batteria app\".</string>
+    <string name="settings_battery_guide_step_3">3. Seleziona \"Senza restrizioni\" / \"Nessuna restrizione\" al posto di \"Ottimizzata\" o \"Con restrizioni\".</string>
+    <string name="settings_battery_guide_step_4">4. Verifica inoltre che le notifiche dell\'app siano consentite.</string>
+    <string name="settings_battery_open_settings">Apri impostazioni</string>
     <string name="playback_notification_channel_name">Riproduzione musicale</string>
     <string name="settings_stats_title">Statistiche d\'ascolto</string>
     <string name="settings_stats_desc">Visualizza brani e artisti più ascoltati e tempo totale</string>

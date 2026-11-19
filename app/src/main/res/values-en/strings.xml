@@ -67,6 +67,14 @@
     <string name="settings_battery_background_title">Background playback (Battery)</string>
     <string name="settings_battery_unrestricted">Unrestricted — background playback protected</string>
     <string name="settings_battery_optimized">Optimized — tap to prevent interruptions when leaving the app</string>
+    <string name="settings_battery_info_desc">Guide to prevent background playback stops</string>
+    <string name="settings_battery_guide_title">Prevent background playback stops</string>
+    <string name="settings_battery_guide_intro">Some devices stop apps when you leave them or turn off the screen to save battery. To keep music playing:</string>
+    <string name="settings_battery_guide_step_1">1. Tap \"Open settings\" below to open the system App Info page.</string>
+    <string name="settings_battery_guide_step_2">2. Open \"Battery\" or \"App battery usage\".</string>
+    <string name="settings_battery_guide_step_3">3. Select \"Unrestricted\" instead of \"Optimized\" or \"Restricted\".</string>
+    <string name="settings_battery_guide_step_4">4. Also make sure app notifications are allowed.</string>
+    <string name="settings_battery_open_settings">Open settings</string>
     <string name="playback_notification_channel_name">Music playback</string>
     <string name="settings_stats_title">Listening statistics</string>
     <string name="settings_stats_desc">View top played songs, artists and total listening time</string>
