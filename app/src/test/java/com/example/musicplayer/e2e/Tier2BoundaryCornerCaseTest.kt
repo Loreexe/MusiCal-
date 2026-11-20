@@ -532,7 +532,7 @@ class Tier2BoundaryCornerCaseTest {
 
     @Test
     fun testF10_Boundary_MissingWikiFilesDetection() {
-        val wikiDir = File(E2ETestHarness.projectRoot, ".project-wiki")
+        val wikiDir = File(E2ETestHarness.projectRoot, ".musical-wiki")
         if (!wikiDir.exists()) return
         val requiredDocs = listOf("INDEX.md", "RULES.md", "PROJECT.md", "CODEMAP.md")
         for (doc in requiredDocs) {
@@ -542,11 +542,11 @@ class Tier2BoundaryCornerCaseTest {
     }
 
     @Test
-    fun testF10_Boundary_CheckStalenessScriptExecutable() {
-        val wikiDir = File(E2ETestHarness.projectRoot, ".project-wiki")
+    fun testF10_Boundary_CheckScriptExecutable() {
+        val wikiDir = File(E2ETestHarness.projectRoot, ".musical-wiki")
         if (!wikiDir.exists()) return
-        val script = File(wikiDir, "check-staleness.ps1")
-        assertTrue(script.exists())
+        val script = File(wikiDir, "check-wiki.sh")
+        assertTrue("check-wiki.sh must exist in .musical-wiki/", script.exists())
         assertTrue("Script must not be empty", script.length() > 0)
     }
 }
