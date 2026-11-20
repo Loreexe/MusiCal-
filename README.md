@@ -1,15 +1,17 @@
 # 🎵 MusiCal — Lettore Musicale Nativo per Android 16
 
-![Versione](https://img.shields.io/badge/versione-0.2.0-8B5CF6)
+![Versione](https://img.shields.io/badge/versione-0.2.9-8B5CF6)
 ![Android](https://img.shields.io/badge/Android-16%20(API%2036)-7C3AED)
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.1.0-A855F7)
 ![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack%20Compose%20%2B%20Material%203-C084FC)
 ![Media3](https://img.shields.io/badge/Audio-AndroidX%20Media3%20(ExoPlayer)-6D28D9)
-![Test](https://img.shields.io/badge/test-295%20passed-success)
+![Test](https://img.shields.io/badge/test-JUnit%204%20%2B%20Mockito-8B5CF6)
 
 **MusiCal** è un lettore musicale locale moderno, veloce e privo di pubblicità o tracciamento, progettato nativamente ed esclusivamente per **Android 16 (API 36)**.
 
 Realizzato interamente in **Kotlin** e **Jetpack Compose** con un'identità visiva **Obsidian & Electric Violet** (Edge-to-Edge nativo), combina un motore audio ad alte prestazioni basato su **AndroidX Media3 (ExoPlayer)**, animazioni fluide a zero-jank (60/120fps), gestione intelligente della coda di riproduzione, playlist con copertine personalizzabili, Smart Auto-Tagger con testi sincronizzati (Karaoke), gestione duplicati avanzata, supporto completo multilingua (Italiano & English) e integrazione nativa con **Last.fm** (inclusa sincronizzazione automatica offline ed avatar con GIF animate hardware).
+
+> **Fork**: questo repository è il fork [`Loreexe/MusiCal-`](https://github.com/Loreexe/MusiCal-) del progetto originale [`PublicGiu/MusiCal`](https://github.com/PublicGiu/MusiCal). Il codice qui presente corrisponde alla versione **0.2.9**; le release del progetto originale possono essere più recenti e questo fork non pubblica APK propri.
 
 ---
 
@@ -49,7 +51,7 @@ Realizzato interamente in **Kotlin** e **Jetpack Compose** con un'identità visi
   - **Copertina personalizzata**: selezione tramite il **Photo Picker di Android 16** (alla creazione o in seguito dal menu `⋮` con *"Cambia copertina"* / *"Rimuovi copertina"*).
 
 ### 🎚️ 4. Equalizzatore Audio DSP, Sleep Timer con Fade-Out, Statistiche & Scheda Artista
-- **Equalizzatore Audio ed Effetti Sonori (`EqualizerDialog`)**: equalizzatore hardware a 5 bande (-15 dB / +15 dB), preset musicali integrati (Flat, Rock, Pop, Jazz, Hip Hop, Elettronica, Classica, Bass Boost, Voce), potenziamento bassi (**Bass Boost**) e spazializzatore 3D (**Virtualizer**), con persistenza autonoma dei parametri in `AppPreferences`.
+- **Equalizzatore Audio ed Effetti Sonori (`EqualizerDialog`)**: equalizzatore hardware con le bande esposte dal dispositivo (tipicamente 5, -15 dB / +15 dB), preset musicali integrati (Flat, Rock, Pop, Jazz, Hip Hop, Elettronica, Classica, Bass Boost, Voce), potenziamento bassi (**Bass Boost**) e spazializzatore 3D (**Virtualizer**), con persistenza autonoma dei parametri in `AppPreferences`.
 - **Sleep Timer con Dissolvenza Volume (`SleepTimerDialog`)**: spegnimento programmato con preset rapidi (15, 30, 45, 60 min), slider personalizzato fino a 120 min o opzione *"Al termine del brano"*, con dissolvenza progressiva del volume (fade-out morbido negli ultimi 15 secondi).
 - **Dashboard Statistiche d'Ascolto (`PlaybackStatsDialog`)**: riepilogo del tempo totale d'ascolto, ascolti complessivi e brani unici esplorati, con classifiche interattive Top 10 Brani, Top 5 Artisti e Top 5 Album.
 - **Scheda Monografica Artista (`ArtistDetailSheet`)**: schermata dedicata per ogni artista con conteggio brani e dischi, pulsanti di riproduzione/accodamento globale, carosello orizzontale degli album e discografia completa.
@@ -105,7 +107,7 @@ Realizzato interamente in **Kotlin** e **Jetpack Compose** con un'identità visi
 - **Configurazione Chiavi API Inline**:
   - Possibilità di inserire o modificare `API Key` e `Shared Secret` direttamente dalla finestra del profilo Last.fm, anche a sessione già attiva, senza dover effettuare il logout.
 - **Resilienza Offline (Room Database)**:
-  - In assenza di connessione Internet, gli scrobble vengono salvati automaticamente in un database SQLite locale (`scrobble_cache.db`) e inviati in background non appena il dispositivo torna online (`ConnectivityManager.NetworkCallback`).
+  - In assenza di connessione Internet, gli scrobble vengono salvati automaticamente in un database SQLite locale (`music_player_scrobbles.db`) e inviati in background non appena il dispositivo torna online (`ConnectivityManager.NetworkCallback`).
 
 ### 🌐 9. Supporto Multilingua Nativo (Italiano & English)
 - **Supporto Per-App Language nativo per Android 16**:
@@ -118,7 +120,7 @@ Realizzato interamente in **Kotlin** e **Jetpack Compose** con un'identità visi
   - Traduzione dinamica della playlist di sistema permanente (*"Brani preferiti"* $\leftrightarrow$ *"Favorite songs"*).
 
 ### 🔔 10. Verifica Aggiornamenti In-App & Note di Rilascio in Markdown Nativo
-- **Verifica Automatica e Manuale**: controllo asincrono delle release ufficiali da GitHub (`PublicGiu/MusiCal`).
+- **Verifica Automatica e Manuale**: controllo asincrono delle release ufficiali del progetto originale da GitHub (`PublicGiu/MusiCal`).
 - **Dialog Note di Rilascio (`UpdateAvailableDialog`)**: anteprima del changelog formattato tramite un parser Markdown nativo in puro Kotlin (`MarkdownContent`), con supporto per titoli, grassetto/corsivo, elenchi puntati, pillole di codice e collegamenti ipertestuali, pulsante di download diretto dell'APK e opzione "Ignora questa versione".
 
 ---
@@ -132,10 +134,10 @@ Realizzato interamente in **Kotlin** e **Jetpack Compose** con un'identità visi
 | **UI & Design System** | Jetpack Compose (BOM `2025.01.00`), Material 3, Edge-to-Edge nativo, AndroidX Palette |
 | **Audio & Background** | AndroidX Media3 `1.5.1` (`ExoPlayer`, `MediaSessionService`, `MediaController`, `ForwardingPlayer`, custom `Media3BitmapLoader`) |
 | **Tagging Audio & Metadati** | `jaudiotagger` Android `2.2.3` (LGPL v2.1 compatibile, privo di AWT), `androidx.exifinterface:exifinterface:1.4.2` |
-| **Persistenza Locale** | `AtomicFile` JSON (`playlists.json`, `track_stats.json`), `LibraryCacheRepository` (`library_cache.json`), Room `2.6.1` (`scrobble_cache.db`), `SharedPreferences` |
+| **Persistenza Locale** | `AtomicFile` JSON (`playlists.json`, `track_stats.json`), `LibraryCacheRepository` (`library_cache.json`), Room `2.6.1` (`music_player_scrobbles.db`), `SharedPreferences` |
 | **Immagini & Rete** | Coil Compose `2.7.0`, OkHttp `4.12.0` (Deezer API, LRCLIB API, Last.fm REST API, GitHub API) |
 | **Localizzazione** | Android 16 Per-App Language (`LocaleManager`), `strings.xml` (Italiano) e `values-en/strings.xml` (Inglese) |
-| **Test Automatizzati** | JUnit 4, Mockito Core, suite completa di **295 unit test** su JVM |
+| **Test Automatizzati** | JUnit 4, Mockito Core, suite di unit test JVM |
 
 ```
 app/src/main/java/com/example/musicplayer/
@@ -154,7 +156,7 @@ app/src/main/java/com/example/musicplayer/
 │   └── update/                             # GithubUpdateChecker per verifica nuove release su GitHub
 ├── playback/
 │   ├── PlaybackService.kt                  # MediaSessionService con ExoPlayer, Audio Focus e WakeLock
-│   ├── EqualizerManager.kt                 # Gestore equalizzatore hardware DSP 5 bande, Bass Boost e Virtualizer
+│   ├── EqualizerManager.kt                 # Gestore equalizzatore hardware DSP multibanda, Bass Boost e Virtualizer
 │   ├── SleepTimerCoordinator.kt            # Coordinatore spegnimento programmato con fade-out volume
 │   └── Media3BitmapLoader.kt               # Caricamento miniature per notifiche e lock screen Android 16
 └── ui/
@@ -171,14 +173,14 @@ app/src/main/java/com/example/musicplayer/
     │   ├── LastFmAvatar.kt                 # Avatar Last.fm con supporto hardware a GIF animate
     │   ├── SyncedLyricsView.kt             # Visualizzatore karaoke con scrolling automatico dei testi .lrc
     │   ├── SettingsDialog.kt               # Finestra impostazioni (Tema, Sorgenti, Autoplay, Lingua, Last.fm)
-    │   ├── EqualizerDialog.kt              # Interfaccia grafica equalizzatore audio a 5 bande
+    │   ├── EqualizerDialog.kt              # Interfaccia grafica equalizzatore audio multibanda
     │   ├── SleepTimerDialog.kt             # Dialog timer spegnimento programmato con fade-out
     │   ├── PlaybackStatsDialog.kt          # Dashboard statistiche e classifiche di riproduzione
     │   ├── ArtistDetailSheet.kt            # Scheda monografica artista con discografia e carosello album
     │   ├── UpdateAvailableDialog.kt        # Dialog aggiornamenti con anteprima changelog Markdown
     │   └── markdown/                       # Parser Markdown puro Kotlin per note di rilascio
     ├── tagger/                             # MetadataEnricherSheet e MetadataEnricherCoordinator (Auto-Tagger)
-    └── theme/                              # Obsidian & Electric Violet Palette e Material You Dynamic Color
+    └── theme/                              # Obsidian & Electric Violet Palette e colori dinamici armonizzati (default off)
 ```
 
 ---
@@ -192,11 +194,13 @@ Il repository e gli APK distribuiti sono concepiti per proteggere rigorosamente 
 
 ---
 
-## 📲 Download Diretto APK
+## 📲 Download APK
 
-Se desideri installare subito **MusiCal v0.2.0** sul tuo dispositivo Android 16 senza compilare il sorgente, scarica il file `.apk` direttamente dalla sezione [**Releases**](https://github.com/PublicGiu/MusiCal/releases/tag/v0.2.0) di questo repository:
+Questo fork **non pubblica APK propri**. Per installare la versione **0.2.9** senza compilare il sorgente, usa l'APK della release `v0.2.9` del progetto originale:
 
-👉 **[Scarica MusiCal-v0.2.0.apk](https://github.com/PublicGiu/MusiCal/releases/download/v0.2.0/MusiCal-v0.2.0.apk)**
+👉 **[Scarica MusiCal-v0.2.9.apk](https://github.com/PublicGiu/MusiCal/releases/download/v0.2.9/MusiCal-v0.2.9.apk)**
+
+Per le versioni più recenti consulta le [**Releases**](https://github.com/PublicGiu/MusiCal/releases) del progetto originale.
 
 ---
 
@@ -211,8 +215,8 @@ Se desideri installare subito **MusiCal v0.2.0** sul tuo dispositivo Android 16 
 
 1. **Clona il repository**:
    ```bash
-   git clone https://github.com/PublicGiu/MusiCal.git
-   cd MusiCal
+   git clone https://github.com/Loreexe/MusiCal-.git
+   cd MusiCal-
    ```
 
 2. **Configura `local.properties`**:
@@ -241,7 +245,7 @@ Se desideri installare subito **MusiCal v0.2.0** sul tuo dispositivo Android 16 
    .\gradlew.bat assembleRelease -PexcludeLastFmKeys=true
    ```
 
-5. **Esegui la suite di Test Unitari (295 test su JVM)**:
+5. **Esegui la suite di Test Unitari (JVM)**:
    ```powershell
    .\gradlew.bat testDebugUnitTest
    ```
